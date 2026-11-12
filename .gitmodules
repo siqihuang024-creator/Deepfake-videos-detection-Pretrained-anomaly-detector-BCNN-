@@ -1,0 +1,3 @@
+[submodule "GenD_anomaly_detector/third_party/GenD"]
+	path = GenD_anomaly_detector/third_party/GenD
+	url = https://github.com/yermandy/GenD.git

@@ -1,0 +1,42 @@
+# Local-only notes: server addresses, ports and account names. The repository
+# is public, so this file must never be pushed.
+REMOTE_WORKFLOW_CONTEXT.md
+
+# Python / IDE
+__pycache__/
+*.py[cod]
+.idea/
+.vscode/
+.ipynb_checkpoints/
+
+# Data, preprocessed frames and caches
+datasets/
+data/
+cache/
+*.npz
+*.npy
+
+# Model weights and training outputs
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+checkpoints/
+runs/
+outputs/
+logs/
+wandb/
+lightning_logs/
+
+# Local environment
+.env
+*.local.sh
+
+# Archives
+*.zip
+*.rar
+*.7z
+*.tar
+*.tar.gz
+*.tgz
