@@ -1,0 +1,2 @@
+# Protocol files are hashed byte-for-byte (SHA256SUMS); never convert line endings.
+GenD_anomaly_detector/protocols/** -text
