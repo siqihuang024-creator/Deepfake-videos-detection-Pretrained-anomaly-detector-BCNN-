@@ -26,7 +26,11 @@
 - 可训练参数：只放开 LayerNorm（`norm_pre`、`norm1`、`norm2`、`norm`），其余冻结
 - 头：`LinearNorm`，即特征先 L2 归一化，再接 Linear(D, 2)
 - 损失：交叉熵；完整 GenD 版本再加 uniformity 和 alignment 损失（论文主配置为 U=0.5、A=0.1，仓库里另有其他取值的扫描）
-- 优化：AdamW，lr 3e-4，cyclic cosine（每 10 epoch 一个周期），最多 30 epoch，早停 patience 30，batch 512，bf16-mixed
+- 优化：AdamW（weight decay 0），lr 3e-4、最低 1e-5，bf16-mixed。下面是经 `run_exp.py` 启动时实际生效的取值：
+  - 先用 `get_default_train_config()` 定基础值：batch 128，开头预热 1 个 epoch；
+  - 再叠加 `get_common()`：cyclic cosine（每 10 个 epoch 一个周期），最多 30 个 epoch，早停 patience 30；
+  - `Config` 类自身的默认 batch 是 512，但会被上面的基础值覆盖，不会生效；
+  - 预热只在训练开头做一次，之后每个周期直接重启。论文描述的是每个周期都预热，这里以代码为准
 - 增强（`config.Augmentations` 默认值）：水平翻转 0.5、仿射（±10°、平移 0.1、缩放 0.9–1.1）、高斯模糊 0.1、亮度和对比度扰动 0.1、JPEG 质量 40–100
 - checkpoint 选择指标：`val/mAP_video`
 - 视频级分数：帧概率取平均（`reduce_video_predictions="mean"`）
@@ -39,6 +43,13 @@ python detector.py -i <视频目录> -m at_least -n 32 -o <输出目录> --det_t
 ```
 
 即人脸框外扩 1.3 倍、检测阈值 0.1、每个视频至少取 32 帧、保存原尺寸裁剪。
+
+**但论文实验实际用的数据目录不同**（`wacv_rebuttal.py` 中的路径）：
+
+- 训练：`FF-x1.3-th0.5-all/subset/random-32-frames/split-{seed}`，即检测阈值 0.5，先处理所有帧，每个 seed 再各自**随机**取 32 帧；
+- 验证 / 测试：`CDFv3-x1.3-th0.5-all/subset/uniform-32-frames`，即**均匀**取 32 帧。
+
+复现时以这个为准，不用 README 示例命令里的 `at_least`（按分散顺序取到 32 张有人脸的帧为止）。
 官方处理后的数据集放在 https://huggingface.co/datasets/yermandy/GenD 。
 
 ## 需要注意的点
