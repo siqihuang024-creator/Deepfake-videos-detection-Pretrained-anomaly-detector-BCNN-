@@ -11,7 +11,32 @@
 | 路径 | 内容 | 规则 |
 | --- | --- | --- |
 | `third_party/GenD/` | 官方仓库 https://github.com/yermandy/GenD | **保持原样不改**。需要改动时在外层写包装或子类 |
-| （待建）`src/`、`configs/`、`scripts/` | 本项目自己的代码：数据清单、贝叶斯头、评估 | |
+| `EXPERIMENT_PLAN.md` | 第一阶段实验方案：哪些跟 GenD、哪些跟旧协议 | 改动要写进文末变更记录 |
+| `protocols/celeb_video_disjoint_seed42/` | 旧协议第 01–30 组清单（原样复制，带 SHA256） | 不改 |
+| `gad/` | 本项目代码：标签映射、抽帧规则、GenD 配置、权重加载、评估 | |
+| `scripts/` | 命令行脚本，运行顺序见下 | |
+| `tests/test_protocol.py` | 不需要 GPU 的协议检查（`python tests/test_protocol.py`） | |
+
+## 第一、二步的运行顺序
+
+```bash
+W=<工作目录>          # 存放表格、人脸图、列表、运行结果
+V=/data/datasets/shuang/CelebDFv3/CelebDFv3
+python scripts/build_video_table.py --out $W/tables --video-root $V
+# 人脸检测 + 裁剪；默认不处理测试集。先用 --limit-per-label 5 做小样本测试，看耗时和成功率
+python scripts/preprocess_videos.py --videos $W/tables/videos.csv --membership $W/tables/membership.csv \
+    --groups 1 --video-root $V --work $W/faces --retinaface <det_10g.onnx>
+python scripts/write_frame_lists.py --tables $W/tables --work $W/faces --out $W/lists --groups 1
+python scripts/check_weight_loading.py --frame-list $W/lists/val.txt --out $W/checks/weights.json
+# 第一步：官方权重，只跑验证集
+python scripts/predict_frames.py --model official --frame-list $W/lists/val.txt --out $W/step1/val.csv
+python scripts/evaluate.py --videos $W/tables/videos.csv --val-pred $W/step1/val.csv --out $W/step1/val_report.json
+# 第二步：第 01 组跑通后再跑满 30 组
+python scripts/run_groups.py --lists $W/lists --runs-dir $W/runs/step2 --groups 1
+python scripts/select_run.py --runs-dir $W/runs/step2 --out $W/runs/step2/selection.json
+```
+
+测试集只在 `select_run.py` 写出选择记录之后处理（`preprocess_videos.py --splits test`、`write_frame_lists.py --with-test`），然后由 `predict_frames.py --selection ...` 和 `evaluate.py --test-pred ... --selection ...` 评估一次。
 
 上游版本：commit `387a42266dd385fbe8f7626c5d3aa03eea3bfaab`（2026-04-21，"Update bibtex"），克隆于 2026-11-12。
 

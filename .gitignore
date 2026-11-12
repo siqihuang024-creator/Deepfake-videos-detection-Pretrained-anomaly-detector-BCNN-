@@ -1,6 +1,8 @@
 # Local-only notes: server addresses, ports and account names. The repository
 # is public, so this file must never be pushed.
 REMOTE_WORKFLOW_CONTEXT.md
+HEFEST_DIRECTORY_MAP_2026-11-12.md
+hefest_directory_tree.txt
 
 # Python / IDE
 __pycache__/
