@@ -36,6 +36,18 @@ python scripts/run_groups.py --lists $W/lists --runs-dir $W/runs/step2 --groups 
 python scripts/select_run.py --runs-dir $W/runs/step2 --out $W/runs/step2/selection.json
 ```
 
+第 02–30 组用 Slurm 批量运行（在仓库根目录提交，`work/` 为工作目录）：
+
+```bash
+mkdir -p work/logs
+sbatch GenD_anomaly_detector/slurm/preprocess_train.sbatch            # 8 个分片，最多同时 4 个
+# 全部分片结束、没有错误后，重新生成所有组的帧清单（val.txt 和 group_01 的清单内容不变）
+python GenD_anomaly_detector/scripts/write_frame_lists.py --tables work/tables --work work/faces --out work/lists
+sbatch --export=ALL,STEP2_GROUPS="2 3 4 5 6 7 8 9 10 11" GenD_anomaly_detector/slurm/train_groups.sbatch
+```
+
+预处理遇到解码错误或检测器运行错误时，脚本以非零状态退出。重新提交同一命令只会重试失败的视频。
+
 测试集只在 `select_run.py` 写出选择记录之后处理（`preprocess_videos.py --splits test`、`write_frame_lists.py --with-test`），然后由 `predict_frames.py --selection ...` 和 `evaluate.py --test-pred ... --selection ...` 评估一次。
 
 上游版本：commit `387a42266dd385fbe8f7626c5d3aa03eea3bfaab`（2026-04-21，"Update bibtex"），克隆于 2026-11-12。

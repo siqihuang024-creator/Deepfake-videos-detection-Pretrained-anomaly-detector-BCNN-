@@ -11,7 +11,9 @@ Outputs per video:
   <records>/<video_key>.json   counts and selected frame indices
   <detections>/<video_key>.npz per-frame detection cache (box, score, landmarks)
 
-Resumable: a video with an existing record is skipped. Shardable for Slurm
+Resumable: a video whose record says ok / no_face is skipped; decode_error
+records are retried, and detector/runtime failures write no record (so they
+are retried too). The run exits non-zero if any video failed. Shardable for Slurm
 arrays with --num-shards / --shard-index.
 """
 
@@ -108,9 +110,11 @@ def write_crops(video_path: str, selected, landmarks, out_dir: Path):
 
 
 def process(row, args, model):
+    import av
+
     record_path = Path(args.records) / (row.video_key + ".json")
-    if record_path.exists():
-        return "skip"
+    if record_path.exists() and json.loads(record_path.read_text(encoding="utf-8"))["status"] != "decode_error":
+        return "skip"  # ok / no_face are final; decode_error is retried on the next run
     video_path = os.path.join(args.video_root, row.rel_path)
     start = time.time()
     record = {"rel_path": row.rel_path, "video_key": row.video_key, "split": row.split, "label": int(row.label),
@@ -119,8 +123,11 @@ def process(row, args, model):
               "train_frame_seed": FR.TRAIN_FRAME_SEED, "gend_commit": upstream_commit()}
     try:
         det = detect_all(model, video_path)
-    except Exception as error:  # unreadable video: record it, never silently drop
+    except av.error.FFmpegError as error:  # unreadable video: record it, never silently drop
         record.update(status="decode_error", error=repr(error), total_frames=0, detected_frames=0, selected=[])
+    except Exception as error:  # detector/runtime failure: no record, so a rerun retries this video
+        print("ERROR (not recorded, will be retried): {}: {!r}".format(row.rel_path, error), flush=True)
+        return "runtime_error"
     else:
         det_path = Path(args.detections) / (row.video_key + ".npz")
         det_path.parent.mkdir(parents=True, exist_ok=True)
@@ -166,8 +173,7 @@ def main():
         keep = set(member[member["group"].isin(args.groups)]["rel_path"])
         videos = videos[videos["rel_path"].isin(keep)]
     if args.limit_per_label:
-        videos = videos.groupby(["split", "label"], group_keys=False).apply(
-            lambda part: part.sort_values("rel_path").head(args.limit_per_label))
+        videos = videos.sort_values("rel_path").groupby(["split", "label"]).head(args.limit_per_label)
     videos = videos.sort_values("rel_path").reset_index(drop=True)
     videos = videos.iloc[args.shard_index::args.num_shards]
     print("shard {}/{}: {} videos, splits={}".format(args.shard_index, args.num_shards, len(videos), args.splits))
@@ -179,6 +185,9 @@ def main():
         counts[status] = counts.get(status, 0) + 1
         if i % 20 == 0 or i == len(videos):
             print("{}/{} {}".format(i, len(videos), counts), flush=True)
+    if counts.get("runtime_error") or counts.get("decode_error"):
+        raise SystemExit("{} runtime errors and {} decode errors; rerun the same command to retry them".format(
+            counts.get("runtime_error", 0), counts.get("decode_error", 0)))
 
 
 if __name__ == "__main__":
