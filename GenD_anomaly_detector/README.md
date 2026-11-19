@@ -21,7 +21,7 @@
 
 ```bash
 W=<工作目录>          # 存放表格、人脸图、列表、运行结果
-V=/data/datasets/shuang/CelebDFv3/CelebDFv3
+V="${CELEB_VIDEO_ROOT:?Set CELEB_VIDEO_ROOT to the CelebDFv3 video directory}"
 python scripts/build_video_table.py --out $W/tables --video-root $V
 # 人脸检测 + 裁剪；默认不处理测试集。先用 --limit-per-label 5 做小样本测试，看耗时和成功率
 python scripts/preprocess_videos.py --videos $W/tables/videos.csv --membership $W/tables/membership.csv \
@@ -52,7 +52,67 @@ sbatch --export=ALL,STEP2_GROUPS="2 3 4 5 6 7 8 9 10 11" GenD_anomaly_detector/s
 
 上游版本：commit `387a42266dd385fbe8f7626c5d3aa03eea3bfaab`（2026-04-21，"Update bibtex"），克隆于 2026-11-12。
 
-## 从官方代码核对到的要点
+## 身份隔离与外部异常检测实验
+
+从含有 `GenD_anomaly_detector/` 和 `work/` 的仓库根目录运行。每次实验使用新的工作目录，保存视频表、帧清单、权重和评估结果。旧的 30 组结果保留在 `work/runs/step2`。
+
+```bash
+py=work/.venv-gend/bin/python
+gad=GenD_anomaly_detector
+id=work/celeb_identity_seed42
+celeb_root="${CELEB_VIDEO_ROOT:?Set CELEB_VIDEO_ROOT to the CelebDFv3 video directory}"
+mkdir -p work/logs
+
+# full_manifest 指向带 target_id、donor_id 和 source_clip 的完整清单。
+"$py" "$gad/scripts/build_identity_split.py" --manifest "$full_manifest" --out "$id/tables" \
+  --train-fakes-per-method-equal-to-real
+sbatch --array=0-7%2 "$gad/slurm/preprocess_protocol.sbatch" "$id" "$celeb_root" train-val
+sbatch "$gad/slurm/preprocess_protocol.sbatch" "$id" "$celeb_root" test
+
+# 两项预处理完成后执行。
+"$py" "$gad/scripts/write_frame_lists.py" --identity-split --with-test \
+  --tables "$id/tables" --work "$id/faces" --out "$id/lists"
+
+# 第 1 步。官方权重直接评估，返回作业号。
+official_job=$(sbatch --parsable "$gad/slurm/identity_supervised.sbatch" "$id" official)
+# 第 2 步。官方评估成功后微调，微调成功后评估选出的权重。
+fit_job=$(sbatch --parsable --dependency="afterok:${official_job%%;*}" "$gad/slurm/identity_supervised.sbatch" "$id" fit)
+sbatch --dependency="afterok:${fit_job%%;*}" "$gad/slurm/identity_supervised.sbatch" "$id" fine-tuned
+```
+
+第 2 步按固定种子从每种方法抽取与训练真视频相同数量的假视频。种子 42 的清单是 417 个真视频与 22 × 417 个假视频，验证及测试使用划分后的全部视频。`tables/summary.json` 记录抽样数量，`lists/coverage.json` 记录人脸裁剪后可用的真视频数与每种方法的假视频数。该规则约束方法配额。
+
+两次评估使用同一份验证和测试清单，分别用各自的验证分数确定阈值。报告与帧预测写入 `$id/eval/`，`per_method` 按伪造方法用同一批可评分真视频计算 AUROC。划分审计记录目标人脸、供体人脸和来源视频的重叠。TalkingFace 的音频驱动片段另行计数。官方模型曾用 CelebDFv3 验证数据参与选模，提交第 1 步前需核对官方验证清单和新测试集的重叠。
+
+第 3、4 步使用同一份经审计的外部数据清单。清单字段为 `dataset,rel_path,split,label,target_id,donor_id,source_clip,method`。给真实训练集和真实验证集指定不同身份，测试集来源于另一外部数据集且包含视觉真、假视频。身份和来源 ID 应在数据集之间对齐。脚本按提供的 ID 检查外部划分间的重叠，并排除 FF++、CelebDFv3 数据集名。与上游数据共享的身份和来源视频需在准备清单时排查。外部视频根目录应包含清单列出的相对路径。
+
+```bash
+ext=work/external_anomaly_v1
+"$py" "$gad/scripts/build_anomaly_table.py" \
+  --manifest "$external_manifest" --video-root "$external_root" --out "$ext/tables"
+sbatch "$gad/slurm/preprocess_protocol.sbatch" "$ext" "$external_root" train-val
+sbatch "$gad/slurm/preprocess_protocol.sbatch" "$ext" "$external_root" test
+
+# 两项预处理完成后执行。
+"$py" "$gad/scripts/write_frame_lists.py" --anomaly --with-test \
+  --tables "$ext/tables" --work "$ext/faces" --out "$ext/lists"
+# 传入第 2 步的选择记录会做第 3、4 步配对实验。省略该参数会单独做第 3 步。
+sbatch "$gad/slurm/external_anomaly.sbatch" "$ext" "$id/runs/finetuned/selection.json"
+```
+
+冻结编码器，逐帧提取并 L2 归一化特征，再按视频取平均。对于两个编码器，以下五种方法都用 A 的训练真视频拟合，用 A 的验证真视频校准到名义 5% FPR。
+
+- B1 用 Ledoit–Wolf 估计协方差，计算 Mahalanobis 距离平方。
+- B2 用第 5 个真实近邻的余弦距离。
+- M1 用 Normal–Inverse-Wishart 先验，`nu0 = d + 2`。得分是多元 Student-t 后验预测分布的负对数密度，对后验尺度下的 Mahalanobis 距离单调。额外抽取 100 组均值和协方差，导出距离均值和标准差。
+- M2 用固定维数的 PCA（最多 64 维）和 Dirichlet-process 变分高斯混合。用 A 的验证真视频在对角和全协方差之间选择。
+- M3 用无偏置的贝叶斯 Deep SVDD。只从 A 的训练真视频估计特征均值，训练、验证和测试统一减去这个均值，再用中心化后的训练特征初始化固定中心。网络宽度为 512、128，以 A 的验证真视频早停。KL 权重为 0.001。最终抽取 50 组网络权重，用到中心的平均距离平方评分，并导出其方差。
+
+结果保留特征、拟合参数、验证和测试逐视频分数。报告包含 AUROC、AP、EER、按方法的 AUROC，以及验证阈值在 B 上对应的实际 FPR、TPR。M1 和 M3 还报告正确和误判视频的平均不确定性及与误判的 Spearman 相关。
+
+M3 的 `heads.npz` 保存训练特征均值。`report.json` 记录训练视频的后验平均距离平方在样本间的方差，以及后验均值网络的输出特征方差相对初始化的比例。分数标准差低于或等于均值的 0.1%，或表示方差低于或等于初始化的 0.01%，会触发诊断提示，供检查训练是否退化。
+
+## 官方权重与预处理配置
 
 **权重**：Hugging Face 官方发布了三个版本：`yermandy/GenD_CLIP_L_14`、`yermandy/GenD_PE_L`、`yermandy/GenD_DINOv3_L`。
 加载方式见 `third_party/GenD/README.md`（`src.hf.modeling_gend.GenD.from_pretrained`）。

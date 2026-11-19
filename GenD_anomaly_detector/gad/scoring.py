@@ -39,11 +39,13 @@ def calibrate_on_validation(val_videos: pd.DataFrame) -> float:
     return M.calibrate_threshold(real, TARGET_FPR)
 
 
-def evaluate_split(videos: pd.DataFrame, threshold: float, draws: int = 2000, seed: int = 42) -> dict:
+def evaluate_split(videos: pd.DataFrame, threshold: float, draws: int = 2000, seed: int = 42,
+                   probability_scores: bool = True) -> dict:
     real_labels = (videos["label"] == GEND_REAL).astype(int).to_numpy()  # old convention
     scores = videos["score"].to_numpy(dtype=np.float64)
     result = M.detection_metrics(real_labels, scores, threshold, TARGET_FPR)
-    result["at_fake_probability_0_5"] = M.operating_point_metrics(real_labels, scores, 0.5)
+    if probability_scores:
+        result["at_fake_probability_0_5"] = M.operating_point_metrics(real_labels, scores, 0.5)
     fake_labels = 1 - real_labels
     result["identity_bootstrap"] = M.clustered_auroc_interval(
         fake_labels, scores, videos["target_id"].to_numpy(), draws=draws, seed=seed)

@@ -89,9 +89,8 @@ def load_group(group: int, protocol_dir: Path = PROTOCOL_DIR) -> pd.DataFrame:
     return frame
 
 
-def to_video_table(frame: pd.DataFrame) -> pd.DataFrame:
+def encode_videos(frame: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame({
-        "group": frame["group"],
         "split": frame["split"],
         "dataset": frame["dataset"],
         "rel_path": frame["path"],
@@ -106,6 +105,12 @@ def to_video_table(frame: pd.DataFrame) -> pd.DataFrame:
     out["video_dir"] = out["rel_path"].map(video_dir_name)
     out["video_key"] = out["dataset"] + "/" + out["gend_source"] + "/" + out["video_dir"]
     out["frame_subset"] = out["split"].map(frame_subset_for_split)
+    return out
+
+
+def to_video_table(frame: pd.DataFrame) -> pd.DataFrame:
+    out = encode_videos(frame)
+    out.insert(0, "group", frame["group"])
     check_video_table(out)
     return out
 

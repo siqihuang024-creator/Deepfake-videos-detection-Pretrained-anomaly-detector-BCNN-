@@ -3,6 +3,8 @@
 REMOTE_WORKFLOW_CONTEXT.md
 HEFEST_DIRECTORY_MAP_2026-11-12.md
 hefest_directory_tree.txt
+/GenD_anomaly_detector/DFDC datasets/
+/导师汇报_2026-11-17/
 
 # Python / IDE
 __pycache__/
@@ -19,6 +21,7 @@ cache/
 *.npy
 
 # Model weights and training outputs
+/GenD_anomaly_detector/results/
 *.pt
 *.pth
 *.ckpt

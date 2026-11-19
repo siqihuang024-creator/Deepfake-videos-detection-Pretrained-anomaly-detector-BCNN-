@@ -20,7 +20,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from gad import manifest as MF  # noqa: E402
-from gad import recipe  # noqa: E402
+from gad import recipe, weights  # noqa: E402
 
 METRIC = recipe.MONITOR_METRIC
 
@@ -39,15 +39,32 @@ def best_of_run(run_dir: Path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--runs-dir", default=None)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--runs-dir")
+    mode.add_argument("--identity-run", type=Path, help="One completed identity-disjoint run directory")
+    mode.add_argument("--official", action="store_true")
     parser.add_argument("--groups", type=int, nargs="*", default=list(MF.FORMAL_GROUPS))
-    parser.add_argument("--official", action="store_true")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
     if args.official:
-        MF.write_json(Path(args.out), {"step": 1, "checkpoint": "official", "model": "yermandy/GenD_PE_L",
+        MF.write_json(Path(args.out), {"step": 1, "checkpoint": "official", "model": weights.OFFICIAL_PE,
                                        "rule": "no training and no selection; single fixed model"})
+        print("wrote", args.out)
+        return
+
+    if args.identity_run:
+        record = best_of_run(args.identity_run)
+        meta = json.loads((args.identity_run / "run_meta.json").read_text(encoding="utf-8"))
+        val_list, = meta["args"]["val_list"]
+        if record["epochs_logged"] != int(meta["effective_settings"]["max_epochs"]):
+            raise SystemExit("Incomplete validation history.")
+        if MF.sha256(Path(record["checkpoint"])) != record["checkpoint_sha256"]:
+            raise SystemExit("Checkpoint hash differs from the training record.")
+        record.update(step=2, protocol="celeb_identity", metric=METRIC,
+                      rule="best video validation AUROC within this run",
+                      val_frame_list_sha256=meta["list_sha256"][Path(val_list).resolve().as_posix()])
+        MF.write_json(Path(args.out), record)
         print("wrote", args.out)
         return
 
