@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import time
+from uuid import UUID
 
 import torch
 from lightning import Callback
@@ -19,6 +20,7 @@ class TrainingMonitor(Callback):
         self.handles = []
         self.started = None
         self.images = 0
+        self.batches = 0
         self.validation_started = None
         self.validation_seconds = 0.0
         self.gpu = {}
@@ -29,14 +31,20 @@ class TrainingMonitor(Callback):
         if self.device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(self.device)
             props = torch.cuda.get_device_properties(self.device)
+            gpu_uuid = str(getattr(props, "uuid", ""))
+            if gpu_uuid and not gpu_uuid.startswith(("GPU-", "MIG-")):
+                try:
+                    gpu_uuid = "GPU-" + str(UUID(gpu_uuid))
+                except ValueError:
+                    pass
             self.gpu = {"name": props.name, "total_memory_bytes": props.total_memory,
-                        "uuid": str(getattr(props, "uuid", "")), "torch": torch.__version__,
+                        "uuid": gpu_uuid, "torch": torch.__version__,
                         "cuda": torch.version.cuda}
             executable = shutil.which("nvidia-smi")
             if executable:
                 command = [executable, "--query-gpu=timestamp,index,uuid,power.draw,power.limit,utilization.gpu,memory.used",
                            "--format=csv", "-l", str(self.interval)]
-                if self.gpu["uuid"].startswith("GPU-"):
+                if self.gpu["uuid"].startswith(("GPU-", "MIG-")):
                     command += ["--id", self.gpu["uuid"]]
                 out = (self.directory / "gpu_log.csv").open("w", encoding="utf-8")
                 error = (self.directory / "gpu_monitor_errors.log").open("w", encoding="utf-8")
@@ -56,6 +64,7 @@ class TrainingMonitor(Callback):
             torch.cuda.synchronize(self.device)
         self.started = time.perf_counter()
         self.images = 0
+        self.batches = 0
         self.validation_seconds = 0.0
 
     def on_validation_start(self, trainer, pl_module):
@@ -73,6 +82,7 @@ class TrainingMonitor(Callback):
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         self.images += len(batch["image"])
+        self.batches += 1
 
     def finish_epoch(self, epoch, complete=True):
         if self.started is None:
@@ -80,13 +90,15 @@ class TrainingMonitor(Callback):
         if self.device.type == "cuda":
             torch.cuda.synchronize(self.device)
         seconds = time.perf_counter() - self.started - self.validation_seconds
-        self.epochs.append({"epoch": epoch, "images": self.images, "seconds": seconds,
+        self.epochs.append({"epoch": epoch, "images": self.images, "batches": self.batches, "seconds": seconds,
                             "images_per_second": self.images / seconds, "complete": complete})
         self.started = None
         self.write_report()
 
     def on_train_epoch_end(self, trainer, pl_module):
-        self.finish_epoch(trainer.current_epoch)
+        # Lightning calls this hook even when max_steps stops a partial epoch.
+        expected = getattr(trainer, "num_training_batches", float("inf"))
+        self.finish_epoch(trainer.current_epoch, complete=self.batches >= expected)
 
     def report(self):
         seconds = sum(item["seconds"] for item in self.epochs)
