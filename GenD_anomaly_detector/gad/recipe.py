@@ -10,6 +10,8 @@ reports any difference, so the copy here cannot silently drift.
 Deliberate protocol deviations (EXPERIMENT_PLAN.md section 0):
   - training/validation files come from our lists, no test files at all;
   - checkpoint monitor ``val/auroc_video`` instead of ``val/mAP_video``.
+  - an explicitly requested optimizer batch size may differ from 128;
+    the per-forward batch also determines the alignment/uniformity samples.
 """
 
 from __future__ import annotations
@@ -31,19 +33,39 @@ RECIPE_FIELDS = (
 
 MONITOR_METRIC = "val/auroc_video"
 CHECKPOINT_NAME = "best_auroc_video"
+DEFAULT_BATCH_SIZE = 128
 
 
-def gend_pe_config(*, trn_files, val_files, run_dir, run_name, seed, mini_batch_size=128, num_workers=8):
+def batch_parameters(batch_size=DEFAULT_BATCH_SIZE, mini_batch_size=None):
+    """Return the per-forward batch and accumulation count for one device.
+
+    Metric losses are computed within each forward batch, so accumulation
+    does not reproduce a larger alignment/uniformity batch.
+    """
+    if mini_batch_size is None:
+        mini_batch_size = batch_size
+    if batch_size < 2 or mini_batch_size != batch_size:
+        raise ValueError("batch_size must be >= 2 and mini_batch_size must equal batch_size; gradient accumulation is disabled")
+    return mini_batch_size, 1
+
+
+def gend_pe_config(*, trn_files, val_files, run_dir, run_name, seed, mini_batch_size=None, num_workers=8,
+                   batch_size=DEFAULT_BATCH_SIZE, trainable="layernorm", lr=3e-4):
+    mini_batch_size, _ = batch_parameters(batch_size, mini_batch_size)
     add_gend_to_path()
     from src import config as C
 
     cfg = C.Config()
     # --- get_default_train_config() ---
     cfg.num_classes = 2
-    cfg.freeze_feature_extractor = True
-    cfg.batch_size = 128
+    if trainable not in ("layernorm", "full"):
+        raise ValueError("trainable must be layernorm or full")
+    if lr < 1e-5:
+        raise ValueError("lr must be at least the fixed min_lr=1e-5")
+    cfg.freeze_feature_extractor = trainable == "layernorm"
+    cfg.batch_size = batch_size
     cfg.lr_scheduler = "cosine"  # replaced by get_common() below
-    cfg.lr = 3e-4
+    cfg.lr = lr
     cfg.min_lr = 1e-5
     cfg.weight_decay = 0
     cfg.warmup_epochs = 1
@@ -59,8 +81,6 @@ def gend_pe_config(*, trn_files, val_files, run_dir, run_name, seed, mini_batch_
     cfg.unfreeze_layers = ["norm_pre", "norm1", "norm2", "norm"]
     cfg.loss = C.Loss(ce_labels=1.0, uniformity=0.5, alignment_labels=0.1)
     # --- protocol / infrastructure (ours) ---
-    if 128 % mini_batch_size:
-        raise ValueError("mini_batch_size must divide 128 (gradient accumulation keeps batch 128)")
     cfg.mini_batch_size = mini_batch_size
     cfg.seed = seed
     cfg.trn_files = list(trn_files)
@@ -112,5 +132,7 @@ def effective_settings(cfg) -> dict:
     out = {name: _dump(getattr(cfg, name)) for name in RECIPE_FIELDS}
     out.update(mini_batch_size=cfg.mini_batch_size, seed=cfg.seed, monitor_metric=cfg.monitor_metric,
                checkpoint_name=cfg.checkpoint_name, num_trn_lists=len(cfg.trn_files),
-               num_val_lists=len(cfg.val_files), num_tst_lists=len(cfg.tst_files))
+               num_val_lists=len(cfg.val_files), num_tst_lists=len(cfg.tst_files),
+               gradient_accumulation=cfg.batch_size // cfg.mini_batch_size,
+               metric_loss_batch_size=cfg.mini_batch_size)
     return out

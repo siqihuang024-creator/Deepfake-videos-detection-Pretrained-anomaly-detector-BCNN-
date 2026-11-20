@@ -17,6 +17,8 @@ experiment="$(realpath "${1:?Supply the external anomaly experiment directory}")
 lists="$experiment/lists"
 out="$experiment/eval/external_$SLURM_JOB_ID"
 export OMP_NUM_THREADS=2
+predict_batch="${GEND_PREDICT_BATCH_SIZE:-256}"
+workers="${GEND_NUM_WORKERS:-2}"
 
 encoders=(official)
 if [[ -n "${2:-}" ]]; then
@@ -44,7 +46,7 @@ for encoder in "${encoders[@]}"; do
     cache="$out/features/$encoder"
     for list in train val test/test; do
         "$py" -u "$scripts/predict_frames.py" --features --model "$model" --selection "$selection" \
-            --frame-list "$lists/$list.txt" --precision bf16 --batch-size 64 --num-workers 2 \
+            --frame-list "$lists/$list.txt" --precision bf16 --batch-size "$predict_batch" --num-workers "$workers" \
             --out "$cache/${list##*/}.npz"
     done
     "$py" -u "$scripts/evaluate_anomaly.py" --videos "$experiment/tables/videos.csv" \

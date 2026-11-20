@@ -1,10 +1,16 @@
-"""Frame subset rules (GenD, inferred from the official data directory names).
+"""Project frame subsets, informed by GenD's experiment directory names.
 
 Every frame is face-detected first; subsets are drawn from the frames where a
 face was found:
   random32  -> training videos, seeded per video (``FF-...-all/subset/random-32-frames``)
   uniform32 -> validation/test videos            (``CDFv3-...-all/subset/uniform-32-frames``)
 Videos with fewer than 32 detected frames use all of them; nothing is repeated.
+
+This is not an exact reimplementation of upstream detector.py's
+fixed_num_frames: that mode uses integer linspace over original video frame
+indices before checking for faces. Here uniform32 uses rounded linspace over
+the detected-frame list. Even if every frame has a face, rounding can select
+different indices. Each video supplies at most 32 individual images, not clips.
 """
 
 from __future__ import annotations

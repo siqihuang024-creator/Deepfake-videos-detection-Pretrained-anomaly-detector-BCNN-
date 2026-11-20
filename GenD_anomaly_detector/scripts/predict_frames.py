@@ -17,6 +17,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
@@ -143,6 +144,10 @@ def main():
         totals = None
     else:
         probs = np.zeros(len(paths), np.float64)
+    if device == "cuda":
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+    started = time.perf_counter()
     with torch.inference_mode(), torch.autocast(device, dtype=torch.bfloat16, enabled=args.precision == "bf16"):
         for images, idx in loader:
             batch = forward(images.to(device, non_blocking=True)).float()
@@ -153,8 +158,16 @@ def main():
             else:
                 probs[idx.numpy()] = batch.softmax(1)[:, weights.FAKE_COLUMN].cpu().numpy()
 
+    if device == "cuda":
+        torch.cuda.synchronize()
+    seconds = time.perf_counter() - started
     meta = {"model": args.model, "frame_list": args.frame_list, "frame_list_sha256": MF.sha256(Path(args.frame_list)),
-            "precision": args.precision, "num_frames": len(paths), "num_videos": len(set(keys))}
+            "precision": args.precision, "num_frames": len(paths), "num_videos": len(set(keys)),
+            "batch_size": args.batch_size, "num_workers": args.num_workers,
+            "inference_seconds": seconds, "images_per_second": len(paths) / seconds,
+            "peak_memory_allocated_bytes": torch.cuda.max_memory_allocated() if device == "cuda" else None,
+            "peak_memory_reserved_bytes": torch.cuda.max_memory_reserved() if device == "cuda" else None}
+    print(f"Inference: {len(paths) / seconds:.2f} images/s; batch={args.batch_size}; workers={args.num_workers}")
     if args.model != "official":
         meta["checkpoint_sha256"] = MF.sha256(Path(args.model))
     if args.features:

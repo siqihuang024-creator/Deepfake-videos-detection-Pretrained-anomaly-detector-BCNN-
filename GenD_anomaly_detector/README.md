@@ -19,6 +19,8 @@
 
 ## 第一、二步的运行顺序
 
+以下为保留的旧 30 组协议记录。当前身份隔离实验使用下文“身份隔离与外部异常检测实验”和 [STEP2_ABLATIONS.md](STEP2_ABLATIONS.md)，不执行此处旧组训练命令。
+
 ```bash
 W=<工作目录>          # 存放表格、人脸图、列表、运行结果
 V="${CELEB_VIDEO_ROOT:?Set CELEB_VIDEO_ROOT to the CelebDFv3 video directory}"
@@ -67,20 +69,34 @@ mkdir -p work/logs
 "$py" "$gad/scripts/build_identity_split.py" --manifest "$full_manifest" --out "$id/tables" \
   --train-fakes-per-method-equal-to-real
 sbatch --array=0-7%2 "$gad/slurm/preprocess_protocol.sbatch" "$id" "$celeb_root" train-val
-sbatch "$gad/slurm/preprocess_protocol.sbatch" "$id" "$celeb_root" test
 
-# 两项预处理完成后执行。
-"$py" "$gad/scripts/write_frame_lists.py" --identity-split --with-test \
+# 训练/验证预处理完成后生成帧清单并检查权重。
+"$py" "$gad/scripts/write_frame_lists.py" --identity-split \
   --tables "$id/tables" --work "$id/faces" --out "$id/lists"
+"$py" "$gad/scripts/check_weight_loading.py" --frame-list "$id/lists/val.txt" --out "$id/checks/weights.json"
 
-# 第 1 步。官方权重直接评估，返回作业号。
-official_job=$(sbatch --parsable "$gad/slurm/identity_supervised.sbatch" "$id" official)
-# 第 2 步。官方评估成功后微调，微调成功后评估选出的权重。
-fit_job=$(sbatch --parsable --dependency="afterok:${official_job%%;*}" "$gad/slurm/identity_supervised.sbatch" "$id" fit)
-sbatch --dependency="afterok:${fit_job%%;*}" "$gad/slurm/identity_supervised.sbatch" "$id" fine-tuned
+# 第 2 步：按 STEP2_ABLATIONS.md 完成资源试跑、prepare、submit、select。
+# 第 1 步和第 2 步的正式测试均须先完成官方选模数据重叠核查与测试集预处理。
+# 不要求先测试官方模型才能开始第 2 步训练。
 ```
 
 第 2 步按固定种子从每种方法抽取与训练真视频相同数量的假视频。种子 42 的清单是 417 个真视频与 22 × 417 个假视频，验证及测试使用划分后的全部视频。`tables/summary.json` 记录抽样数量，`lists/coverage.json` 记录人脸裁剪后可用的真视频数与每种方法的假视频数。该规则约束方法配额。
+
+### 256 图像微调批量的含义
+
+每视频最多取 32 帧与训练批量是两个独立设置。默认每次前向和每次参数更新使用 128 张独立图像。`train_gend.py --batch-size 256` 会将单次前向和参数更新批量都设为 256；不增加每视频帧数，不强制每批由 8 个完整视频组成，也不引入 clip 时序维度。学习率、损失系数和最大 30 个 epoch 保持原配置。
+
+当前通过下述三设置矩阵运行 `ln_b256_s42`、`ln_b256_s43`、`ln_b256_s44`，不再额外启动旧的 `finetuned_b256` 单次方案。
+
+批量 256 是有记录的训练协议变更，不等同于原批量 128：每轮参数更新次数约减半，alignment 和 uniformity 的批内样本及配对数量改变，收敛轨迹和验证结果也可能改变。批量增大不保证吞吐量或指标更好。当前拒绝 `mini_batch_size != batch_size`：两个 128 图像批次的累积不等价于一次 256 图像的度量损失，上游按 DataLoader 批次数定义的调度长度也会与优化步数错位。
+
+`run_meta.json` 保存实际前向批量、更新批量、梯度累积次数及与上游的配置差异。第 4 步只使用矩阵从三个 ln-b128 中按验证结果锁定的 `runs/ablation_selection.json`，不使用 ln-b256 的选择记录。检查批量配置可运行 `python GenD_anomaly_detector/tests/test_training_batch.py -v`。
+
+### 三种设置、三个训练种子的单 GPU 扩展实验
+
+预先登记的矩阵为 `ln_b128`、`ln_b256`、`full_b128`，各用训练种子 42、43、44，共 9 次；所有运行共用划分种子 42 的数据清单和现有预处理。只用一张 GPU，三个设置按上述顺序串行运行，不使用占位或空转计算。完整的学习率分组、20 步资源试跑、依赖数组提交、测试报告与第 4 步选模规则见 [STEP2_ABLATIONS.md](STEP2_ABLATIONS.md)。这些额外训练用于检验真实的研究问题，并记录实际资源需求。
+
+全参数微调使用本项目子类实现，不修改 `third_party/GenD`。现有 LN 默认配置保留。推理与特征提取可通过 `GEND_PREDICT_BATCH_SIZE` 设置批量（Slurm 默认 256），通过 `GEND_NUM_WORKERS` 设置加载进程数。推理批量不改变模型或帧清单，但混合精度与内核选择可能导致细小数值差异，不能保证位级完全相同；元数据记录批量、吞吐量和峰值显存。
 
 两次评估使用同一份验证和测试清单，分别用各自的验证分数确定阈值。报告与帧预测写入 `$id/eval/`，`per_method` 按伪造方法用同一批可评分真视频计算 AUROC。划分审计记录目标人脸、供体人脸和来源视频的重叠。TalkingFace 的音频驱动片段另行计数。官方模型曾用 CelebDFv3 验证数据参与选模，提交第 1 步前需核对官方验证清单和新测试集的重叠。
 
@@ -97,7 +113,7 @@ sbatch "$gad/slurm/preprocess_protocol.sbatch" "$ext" "$external_root" test
 "$py" "$gad/scripts/write_frame_lists.py" --anomaly --with-test \
   --tables "$ext/tables" --work "$ext/faces" --out "$ext/lists"
 # 传入第 2 步的选择记录会做第 3、4 步配对实验。省略该参数会单独做第 3 步。
-sbatch "$gad/slurm/external_anomaly.sbatch" "$ext" "$id/runs/finetuned/selection.json"
+sbatch "$gad/slurm/external_anomaly.sbatch" "$ext" "$id/runs/ablation_selection.json"
 ```
 
 冻结编码器，逐帧提取并 L2 归一化特征，再按视频取平均。对于两个编码器，以下五种方法都用 A 的训练真视频拟合，用 A 的验证真视频校准到名义 5% FPR。
@@ -109,6 +125,8 @@ sbatch "$gad/slurm/external_anomaly.sbatch" "$ext" "$id/runs/finetuned/selection
 - M3 用无偏置的贝叶斯 Deep SVDD。只从 A 的训练真视频估计特征均值，训练、验证和测试统一减去这个均值，再用中心化后的训练特征初始化固定中心。网络宽度为 512、128，以 A 的验证真视频早停。KL 权重为 0.001。最终抽取 50 组网络权重，用到中心的平均距离平方评分，并导出其方差。
 
 结果保留特征、拟合参数、验证和测试逐视频分数。报告包含 AUROC、AP、EER、按方法的 AUROC，以及验证阈值在 B 上对应的实际 FPR、TPR。M1 和 M3 还报告正确和误判视频的平均不确定性及与误判的 Spearman 相关。
+
+第 4 步用选中的微调编码器重新提取 A/B 特征，并在 A 上重新拟合全部异常头和验证阈值，不复用第 3 步拟合的异常头。HDTF-only 与 HDTF+TalkingHead-1KH 两种 A、DFDC 与 PolyGlotFake 两种 B，应分别准备清单和工作目录；当前脚本不会自动按 B 的数据集拆分报告。官方 GenD 分类头在 B 上的概率分数对照属于计划中的补充，当前 `external_anomaly.sbatch` 仅执行特征提取与五种异常头，尚未自动生成该分类对照。
 
 M3 的 `heads.npz` 保存训练特征均值。`report.json` 记录训练视频的后验平均距离平方在样本间的方差，以及后验均值网络的输出特征方差相对初始化的比例。分数标准差低于或等于均值的 0.1%，或表示方差低于或等于初始化的 0.01%，会触发诊断提示，供检查训练是否退化。
 
@@ -131,7 +149,7 @@ M3 的 `heads.npz` 保存训练特征均值。`report.json` 记录训练视频�
 - 增强（`config.Augmentations` 默认值）：水平翻转 0.5、仿射（±10°、平移 0.1、缩放 0.9–1.1）、高斯模糊 0.1、亮度和对比度扰动 0.1、JPEG 质量 40–100
 - checkpoint 选择指标：`val/mAP_video`
 - 视频级分数：帧概率取平均（`reduce_video_predictions="mean"`）
-- 训练数据：FF++ 训练集，每个视频随机取 32 帧，用 5 个 seed 各自抽帧（`split-0..4`）
+- 训练数据：FF++ 训练集，配置读取 5 套 seed 对应的 `random-32-frames/split-0..4` 子集
 
 **人脸预处理**（`detector.py`，RetinaFace）：
 
@@ -141,13 +159,27 @@ python detector.py -i <视频目录> -m at_least -n 32 -o <输出目录> --det_t
 
 即人脸框外扩 1.3 倍、检测阈值 0.1、每个视频至少取 32 帧、保存原尺寸裁剪。
 
-**但论文实验实际用的数据目录不同**（`wacv_rebuttal.py` 中的路径）：
+**正式实验配置读取的数据目录**（`wacv_rebuttal.py` 中的路径）：
 
-- 训练：`FF-x1.3-th0.5-all/subset/random-32-frames/split-{seed}`，即检测阈值 0.5，先处理所有帧，每个 seed 再各自**随机**取 32 帧；
-- 验证 / 测试：`CDFv3-x1.3-th0.5-all/subset/uniform-32-frames`，即**均匀**取 32 帧。
+- 训练：`FF-x1.3-th0.5-all/subset/random-32-frames/split-{seed}`；
+- 验证 / 测试：`CDFv3-x1.3-th0.5-all/subset/uniform-32-frames`。
 
-复现时以这个为准，不用 README 示例命令里的 `at_least`（按分散顺序取到 32 张有人脸的帧为止）。
+这些路径表明配置读取了随机或均匀的 32 帧子集，但仅凭路径不能确认子集生成时是在原视频帧号还是检测成功帧中采样。核对上游提交 `387a422` 时，未定位到生成这些特定子集的独立脚本。
 官方处理后的数据集放在 https://huggingface.co/datasets/yermandy/GenD 。
+
+### 本项目的取帧协议与官方实现的区别
+
+每个视频合计最多使用 32 张人脸图像；Slurm 的 8 个分片用于分配视频处理任务，不代表每个视频有 8 个 clip。
+
+| 阶段 | 本项目当前实际行为 |
+| --- | --- |
+| 训练 | 逐帧检测人脸，再从检测成功帧中按视频固定随机抽最多 32 帧；各 epoch 复用这批帧并施加图像增强 |
+| 验证 / 测试 | 逐帧检测人脸，再从检测成功帧列表中均匀抽最多 32 帧；位置计算使用四舍五入 |
+| 有效帧不足 32 | 全部使用，不重复补帧；无有效人脸的视频计入覆盖率报告 |
+
+GenD 论文第 3.2 节描述先在原视频上均匀取 32 帧，再做人脸检测。官方 `detector.py` 已公开 `fixed_num_frames`、`fixed_stride`、`at_least` 三种模式。其中 `fixed_num_frames` 使用 `np.linspace(..., dtype=int)` 在原视频帧号上取样，再检测人脸；检测失败后不会自动从其他帧补齐。它和本项目的检测后取样并不等价；即使所有帧都检测成功，整数取样与四舍五入也可能产生不同帧号。
+
+因此，当前实现应描述为“参考 GenD 正式实验配置制定的、从检测成功帧中抽样的固定协议”，不能称为逐帧完全复现官方 `fixed_num_frames`。这处说明修正不改变当前算法、抽帧种子或已有结果。未来若更改取样规则，应另设协议和预处理目录，并统一应用于四步实验，避免混用已有缓存。
 
 ## 需要注意的点
 
