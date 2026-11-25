@@ -1,7 +1,9 @@
 """Bias-free Bayesian Deep SVDD trained on genuine video features."""
 
 import math
+import time
 
+import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -63,11 +65,20 @@ def posterior_distances(x, center, sample_weights, draws):
     return mean, sum_squared.clamp_min(0) / (draws - 1)
 
 
-def fit(training, validation, device):
+def fit(training, validation, device, progress=None):
+    device = torch.device(device)
     x = torch.as_tensor(training, dtype=torch.float32, device=device)
+    val = torch.as_tensor(validation, dtype=torch.float32, device=device)
+    if (x.ndim != 2 or val.ndim != 2 or len(x) < 2 or not len(val)
+            or x.shape[1] != val.shape[1] or not x.shape[1]
+            or not torch.isfinite(x).all() or not torch.isfinite(val).all()):
+        raise ValueError("Expected finite genuine fitting and independent early-stop feature matrices")
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    started = time.perf_counter()
     feature_mean = x.mean(dim=0)
     x = x - feature_mean
-    val = torch.as_tensor(validation, dtype=torch.float32, device=device) - feature_mean
+    val = val - feature_mean
     train_rng = torch.Generator(device=device).manual_seed(SEED)
     first = BayesianLinear(x.shape[1], WIDTHS[0], train_rng, device)
     second = BayesianLinear(WIDTHS[0], WIDTHS[1], train_rng, device)
@@ -81,10 +92,15 @@ def fit(training, validation, device):
     optimizer = torch.optim.Adam([*first.parameters(), *second.parameters()], lr=LEARNING_RATE)
     best_distance = math.inf
     best = {}
+    history = []
     for epoch in range(1, MAX_EPOCHS + 1):
+        training_loss = 0.
         for indices in torch.randperm(len(x), generator=train_rng, device=device).split(BATCH_SIZE):
             distance = squared_distances(x[indices], first.sample(train_rng), second.sample(train_rng), center)
             loss = distance.mean() + KL_WEIGHT * (first.kl() + second.kl()) / len(x)
+            if not torch.isfinite(loss):
+                raise ValueError(f"Bayesian Deep SVDD training diverged at epoch {epoch}")
+            training_loss += float(loss.detach()) * len(indices)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
@@ -106,9 +122,16 @@ def fit(training, validation, device):
                 "first_std": F.softplus(first.rho).detach().cpu().numpy(),
                 "second_std": F.softplus(second.rho).detach().cpu().numpy(),
             }
+        elapsed = time.perf_counter() - started
+        history.append([epoch, training_loss / len(x), objective, elapsed])
+        if progress is not None:
+            progress({"epoch": epoch, "training_loss": training_loss / len(x),
+                      "early_stop_distance": objective, "best_epoch": best["best_epoch"], "seconds": elapsed})
         if epoch - best["best_epoch"] >= PATIENCE:
             break
-    head = {**best, "epochs_run": epoch, "center": center.cpu().numpy(), "feature_mean": feature_mean.cpu().numpy()}
+    head = {**best, "epochs_run": epoch, "center": center.cpu().numpy(), "feature_mean": feature_mean.cpu().numpy(),
+            "training_history": np.asarray(history, dtype=np.float64),
+            "training_seconds": time.perf_counter() - started}
     return {**head, **training_diagnostics(x, head, initial_variance)}
 
 

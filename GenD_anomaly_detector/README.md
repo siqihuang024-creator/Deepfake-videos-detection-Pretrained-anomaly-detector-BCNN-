@@ -4,6 +4,7 @@
 
 **本项目选用 GenD-PE**（Perception Encoder L/14，官方权重 `yermandy/GenD_PE_L`）。
 官方仓库同时支持 CLIP、PE、DINOv3 三种 backbone，CLIP 和 DINOv3 不在主线中使用。
+当前第二步完成后的流程见 **[DIAGNOSTIC_PHASE.md](DIAGNOSTIC_PHASE.md)**：先完成两个冻结 GenD 编码器上的贝叶斯神经网络头实验；NIW / Ledoit–Wolf 作为后续或平行对照，共用逐帧缓存。第二步不重训，暂缓 DeepSpeak / CoCoVideo；下文早期外部全量评估命令仅作历史记录。
 前一阶段 3D-CNN 实验见 `E:\PhD\Deepfake Video 3D-CNN+BCNN v2(1)`，背景摘要见上级目录 `PREVIOUS_PROJECT_CONTEXT.md`。
 
 ## 目录约定

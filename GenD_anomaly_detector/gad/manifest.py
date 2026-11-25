@@ -67,7 +67,8 @@ def video_dir_name(rel_path: str) -> str:
 
 def frame_subset_for_split(split: str) -> str:
     """GenD: training videos get random-32, validation/test get uniform-32."""
-    return {"train": "random32", "val": "uniform32", "test": "uniform32"}[split]
+    return {"train": "random32", "val": "uniform32", "calibration": "uniform32",
+            "dev": "uniform32", "test": "uniform32"}[split]
 
 
 def sha256(path: Path) -> str:

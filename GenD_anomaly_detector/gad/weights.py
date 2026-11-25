@@ -15,11 +15,11 @@ OFFICIAL_PE = "yermandy/GenD_PE_L"
 FAKE_COLUMN = 1  # GenD: softmax column 1 = fake
 
 
-def load_hf_model(repo: str = OFFICIAL_PE):
+def load_hf_model(repo: str = OFFICIAL_PE, revision=None):
     add_gend_to_path()
     from src.hf.modeling_gend import GenD as HFGenD
 
-    model = HFGenD.from_pretrained(repo)
+    model = HFGenD.from_pretrained(repo, **({"revision": revision} if revision else {}))
     model.eval()
     return model
 

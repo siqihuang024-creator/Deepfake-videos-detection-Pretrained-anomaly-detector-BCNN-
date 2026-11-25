@@ -28,6 +28,7 @@ from gad import frames as FR  # noqa: E402
 from gad import manifest as MF  # noqa: E402
 from build_anomaly_table import audit_table  # noqa: E402
 from build_identity_split import audit_splits  # noqa: E402
+from gad.diagnostic_protocol import read_registered_plan, sha256_file
 
 
 def frame_paths(video_rows, records_dir: Path, crops_dir: Path, verify_split=False):
@@ -98,10 +99,18 @@ def main():
     mode.add_argument("--groups", type=int, nargs="*", default=list(MF.FORMAL_GROUPS))
     mode.add_argument("--identity-split", action="store_true")
     mode.add_argument("--anomaly", action="store_true", help="Read real-only train/val from build_anomaly_table.py")
+    mode.add_argument("--diagnostic-plan", type=Path,
+                      help="Registered train/calibration/dev/test protocol; test stays opt-in")
     parser.add_argument("--with-test", action="store_true")
     args = parser.parse_args()
 
     tables, work, out = Path(args.tables), Path(args.work), Path(args.out)
+    if args.diagnostic_plan:
+        if tables.resolve() != (args.diagnostic_plan.parent / "tables").resolve():
+            parser.error("--tables must belong to --diagnostic-plan")
+        coverage = write_diagnostic_lists(args.diagnostic_plan, work, out, args.with_test)
+        print(json.dumps(coverage, indent=2))
+        return
     videos = pd.read_csv(tables / "videos.csv", keep_default_na=not (args.identity_split or args.anomaly),
                          dtype={"target_id": str, "donor_id": str, "source_clip": str}
                          if args.identity_split or args.anomaly else None)
@@ -115,6 +124,33 @@ def main():
     for name, item in coverage.items():
         print("{}: {} videos, {} frames, {} without usable face".format(
             name, item["videos"], item["frames"], len(item["unusable"])))
+
+
+def write_diagnostic_lists(plan_path, work, out, with_test=False):
+    _, videos = read_registered_plan(plan_path)
+    out = Path(out)
+    if out.exists():
+        raise FileExistsError("Use a new list directory; registered lists must not be overwritten")
+    files, coverage, combined = {}, {}, []
+    roles = ("train", "calibration", "dev", "test") if with_test else ("train", "calibration", "dev")
+    for role in roles:
+        rows = videos.loc[videos["split"].eq(role)].sort_values("rel_path")
+        lines, unusable = frame_paths(rows, Path(work) / "records", Path(work).resolve() / "crops", True)
+        usable = rows.loc[~rows["rel_path"].isin([r["rel_path"] for r in unusable])]
+        if set(usable["label"]) != ({0} if role in ("train", "calibration") else {0, 1}):
+            raise ValueError(f"Missing scorable classes in {role}")
+        files["test/test.txt" if role == "test" else role + ".txt"] = lines
+        if role != "test":
+            combined.extend(lines)
+        coverage[role] = {"videos": len(rows), "frames": len(lines), "unusable": unusable,
+                          "usable_keys": usable["video_key"].tolist()}
+    files["development.txt"] = combined
+    for filename, lines in files.items():
+        write_list(out / filename, lines)
+    MF.write_json(out / "frame_lists.json", {
+        "plan_sha256": sha256_file(plan_path), "coverage": coverage,
+        "files": {name: sha256_file(out / name) for name in files}})
+    return coverage
 
 
 def write_group_lists(videos, member, out, records, crops, groups, with_test):

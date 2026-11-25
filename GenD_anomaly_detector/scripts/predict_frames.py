@@ -54,13 +54,13 @@ def check_selection(selection_path, model_arg):
         raise SystemExit("Checkpoint content changed since selection.")
 
 
-def load_model(model_arg, device, features=False):
+def load_frozen_module(model_arg, device, official_revision=None):
     add_gend_to_path()
     import torch
 
     if model_arg == "official":
-        hf = weights.load_hf_model().to(device).eval()
-        return inference_forward(hf, hf, features), hf.feature_extractor.preprocess
+        hf = weights.load_hf_model(revision=official_revision).to(device).eval().requires_grad_(False)
+        return hf, hf.feature_extractor.preprocess
     from src.model.GenD import GenD
 
     cfg = recipe.gend_pe_config(trn_files=[], val_files=[], run_dir="runs/predict", run_name="predict", seed=0)
@@ -70,8 +70,14 @@ def load_model(model_arg, device, features=False):
     missing = [k for k in result.missing_keys if k.startswith(("feature_extractor.", "model."))]
     if missing or result.unexpected_keys:
         raise SystemExit("Checkpoint keys mismatch: missing={} unexpected={}".format(missing[:5], result.unexpected_keys[:5]))
-    module = module.to(device).eval()
-    return inference_forward(module, lambda x: module(x).logits_labels, features), module.get_preprocessing()
+    module = module.to(device).eval().requires_grad_(False)
+    return module, module.get_preprocessing()
+
+
+def load_model(model_arg, device, features=False):
+    module, preprocess = load_frozen_module(model_arg, device)
+    classify = module if model_arg == "official" else lambda x: module(x).logits_labels
+    return inference_forward(module, classify, features), preprocess
 
 
 def inference_forward(model, classify, features):

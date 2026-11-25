@@ -66,6 +66,8 @@ def main():
             raise SystemExit("Refusing a test list in training: {}".format(path))
 
     add_gend_to_path()
+    from gad.metric_compat import install_upstream_fix
+    install_upstream_fix()
     import torch
     from lightning import Trainer
 
@@ -139,6 +141,7 @@ def main():
         "list_sha256": {p: MF.sha256(Path(p)) for p in cfg.trn_files + cfg.val_files},
         "debug": bool(args.max_epochs_debug or args.probe_steps),
         "trainable": args.trainable, "project_git_commit": commit,
+        "eer_implementation": "gad.metric_compat.calculate_eer_v1",
         "gradient_checkpointing": args.gradient_checkpointing,
         "ablation_plan_sha256": os.environ.get("GEND_ABLATION_PLAN_SHA256") or None,
         "optimizer_parameter_groups": group_report(grouped_parameters(

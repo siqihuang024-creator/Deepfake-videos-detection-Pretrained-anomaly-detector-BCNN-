@@ -24,12 +24,23 @@ def matrix(features):
     return x
 
 
-def fit_statistical_heads(training, validation):
+STATISTICAL_HEADS = ("mahalanobis", "knn_cosine", "bayesian_gaussian", "bayesian_gaussian_mixture")
+
+
+def fit_statistical_heads(training, validation=None, head_names=None):
     x = matrix(training)
-    val = matrix(validation)
+    names = tuple(STATISTICAL_HEADS if head_names is None else head_names)
+    if not names or len(set(names)) != len(names) or set(names) - set(STATISTICAL_HEADS):
+        raise ValueError("Choose distinct, supported statistical heads")
     n, d = x.shape
-    if n < KNN_NEIGHBORS or d != val.shape[1]:
-        raise ValueError(f"Expected at least {KNN_NEIGHBORS} training vectors and matching validation dimensions.")
+    if n < 2 or ("knn_cosine" in names and n < KNN_NEIGHBORS):
+        raise ValueError("Not enough independent training video vectors")
+    if "bayesian_gaussian_mixture" in names:
+        if validation is None:
+            raise ValueError("Mixture selection requires separate model-validation features")
+        val = matrix(validation)
+        if d != val.shape[1]:
+            raise ValueError("Feature dimensions differ")
     mean = x.mean(axis=0)
     delta = x - mean
     scatter = delta.T @ delta
@@ -37,7 +48,6 @@ def fit_statistical_heads(training, validation):
     if average_variance <= 0:
         raise ValueError("Genuine training embeddings have no variance.")
 
-    ledoit = LedoitWolf().fit(x)
     # IW(nu, Psi) has E[covariance] = Psi / (nu - d - 1).
     nu0 = d + 2
     kappa0 = BAYESIAN_PRIOR_MEAN_WEIGHT
@@ -45,14 +55,19 @@ def fit_statistical_heads(training, validation):
     nu_n = nu0 + n
     psi_n = (nu0 - d - 1) * average_variance * np.eye(d) + scatter
     psi_n += (n * kappa0 / kappa_n) * np.outer(mean, mean)
-    return {
-        "mahalanobis": {"mean": ledoit.location_, "cholesky": np.linalg.cholesky(ledoit.covariance_),
-                        "shrinkage": ledoit.shrinkage_},
-        "knn_cosine": {"training_unit_vectors": unit_rows(x), "neighbors": KNN_NEIGHBORS},
-        "bayesian_gaussian": {"mean": n / kappa_n * mean, "kappa_n": kappa_n, "nu_n": nu_n, "nu0": nu0,
-                              "psi_cholesky": np.linalg.cholesky(psi_n)},
-        "bayesian_gaussian_mixture": fit_mixture(x, val),
-    }
+    heads = {}
+    if "mahalanobis" in names:
+        ledoit = LedoitWolf().fit(x)
+        heads["mahalanobis"] = {"mean": ledoit.location_,
+            "cholesky": np.linalg.cholesky(ledoit.covariance_), "shrinkage": ledoit.shrinkage_}
+    if "knn_cosine" in names:
+        heads["knn_cosine"] = {"training_unit_vectors": unit_rows(x), "neighbors": KNN_NEIGHBORS}
+    if "bayesian_gaussian" in names:
+        heads["bayesian_gaussian"] = {"mean": n / kappa_n * mean, "kappa_n": kappa_n,
+            "nu_n": nu_n, "nu0": nu0, "psi_cholesky": np.linalg.cholesky(psi_n)}
+    if "bayesian_gaussian_mixture" in names:
+        heads["bayesian_gaussian_mixture"] = fit_mixture(x, val)
+    return heads
 
 
 def unit_rows(x):
@@ -97,7 +112,9 @@ def mixture_scores(x, head):
     return -model.score_samples(projected)
 
 
-def niw_scores(x, head):
+def niw_scores(x, head, posterior_draws=NIW_DRAWS):
+    if posterior_draws != 0 and posterior_draws < 2:
+        raise ValueError("Use zero draws for predictive scores only, or at least two for uncertainty")
     chol = head["psi_cholesky"]
     centered = solve_triangular(chol, (x - head["mean"]).T, lower=True)
     d, nu = chol.shape[0], int(head["nu_n"])
@@ -108,6 +125,8 @@ def niw_scores(x, head):
     log_normalizer = (math.lgamma(df / 2) - math.lgamma((df + d) / 2)
                       + 0.5 * d * math.log(df * math.pi * scale) + np.log(chol.diagonal()).sum())
     scores = log_normalizer + 0.5 * (df + d) * np.log1p(distance / (df * scale))
+    if posterior_draws == 0:
+        return scores, {}
 
     # Bartlett factor A of the standard Wishart. The sampled precision is
     # L^(-T) A A^T L^(-1); drawing mu conditional on it subtracts iid normals
@@ -118,7 +137,7 @@ def niw_scores(x, head):
     factor = np.zeros((d, d), order="F")
     mean_distance = np.zeros(len(x))
     sum_squared = np.zeros(len(x))
-    for count in range(1, NIW_DRAWS + 1):
+    for count in range(1, posterior_draws + 1):
         factor[lower] = rng.standard_normal(len(lower[0]))
         factor[diag] = np.sqrt(rng.chisquare(nu - np.arange(d)))
         offset = rng.standard_normal((d, 1)) / math.sqrt(kappa)
@@ -128,10 +147,10 @@ def niw_scores(x, head):
         mean_distance += delta / count
         sum_squared += delta * (draw - mean_distance)
     return scores, {"posterior_distance_mean": mean_distance,
-                    "posterior_distance_std": np.sqrt(np.maximum(sum_squared, 0) / (NIW_DRAWS - 1))}
+                    "posterior_distance_std": np.sqrt(np.maximum(sum_squared, 0) / (posterior_draws - 1))}
 
 
-def score_statistical_head(name, features, head):
+def score_statistical_head(name, features, head, posterior_draws=NIW_DRAWS):
     x = matrix(features)
     if name == "mahalanobis":
         whitened = solve_triangular(head["cholesky"], (x - head["mean"]).T, lower=True)
@@ -145,7 +164,7 @@ def score_statistical_head(name, features, head):
             distances.append(1 - np.clip(np.partition(similarities, kth, axis=1)[:, kth], -1., 1.))
         return np.concatenate(distances), {}
     if name == "bayesian_gaussian":
-        return niw_scores(x, head)
+        return niw_scores(x, head, posterior_draws)
     if name == "bayesian_gaussian_mixture":
         return mixture_scores(x, head), {}
     raise ValueError(f"Unknown anomaly head {name}")

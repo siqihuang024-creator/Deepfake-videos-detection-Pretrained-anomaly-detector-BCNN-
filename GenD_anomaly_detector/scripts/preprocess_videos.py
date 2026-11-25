@@ -50,18 +50,24 @@ def build_detector(model_file: str, cpu: bool):
     return model
 
 
-def iter_frames(path: str):
+def iter_timed_frames(path: str):
     import av
 
     with av.open(path) as container:
         stream = container.streams.video[0]
         for index, frame in enumerate(container.decode(stream)):
-            yield index, frame.to_ndarray(format="bgr24")
+            yield index, frame.to_ndarray(format="bgr24"), (float(frame.time) if frame.time is not None else np.nan)
+
+
+def iter_frames(path: str):
+    for index, image, _ in iter_timed_frames(path):
+        yield index, image
 
 
 def detect_all(model, video_path: str):
-    boxes, scores, landmarks, has_face = [], [], [], []
-    for _, frame in iter_frames(video_path):
+    boxes, scores, landmarks, has_face, timestamps = [], [], [], [], []
+    for _, frame, timestamp in iter_timed_frames(video_path):
+        timestamps.append(timestamp)
         det, kps = model.detect(frame)
         if len(det) == 0:
             has_face.append(False)
@@ -80,6 +86,7 @@ def detect_all(model, video_path: str):
         "boxes": np.asarray(boxes, np.float32).reshape(-1, 4),
         "scores": np.asarray(scores, np.float32),
         "landmarks": np.asarray(landmarks, np.float32).reshape(-1, 5, 2),
+        "timestamps_seconds": np.asarray(timestamps, np.float64),
     }
 
 
@@ -138,7 +145,9 @@ def process(row, args, model):
         if written != selected:
             raise AssertionError("Wrote {} of {} selected frames for {}".format(len(written), len(selected), row.rel_path))
         record.update(status="ok" if selected else "no_face", total_frames=int(len(det["has_face"])),
-                      detected_frames=len(detected), selected=selected)
+                      detected_frames=len(detected), selected=selected,
+                      selected_timestamps_seconds=[float(det["timestamps_seconds"][i])
+                          if np.isfinite(det["timestamps_seconds"][i]) else None for i in selected])
     record["seconds"] = round(time.time() - start, 2)
     record_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = record_path.with_suffix(".json.tmp")
@@ -152,7 +161,8 @@ def main():
     parser.add_argument("--videos", required=True, help="videos.csv from build_video_table.py")
     parser.add_argument("--membership", default=None, help="membership.csv, needed with --groups")
     parser.add_argument("--groups", type=int, nargs="*", default=None, help="Only videos used by these groups")
-    parser.add_argument("--splits", nargs="*", default=["train", "val"], choices=["train", "val", "test"],
+    parser.add_argument("--splits", nargs="*", default=["train", "val"],
+                        choices=["train", "val", "calibration", "dev", "test"],
                         help="Default excludes test; add 'test' explicitly when it is time")
     parser.add_argument("--limit-per-label", type=int, default=None, help="Small smoke test: N real + N fake")
     parser.add_argument("--video-root", required=True)
