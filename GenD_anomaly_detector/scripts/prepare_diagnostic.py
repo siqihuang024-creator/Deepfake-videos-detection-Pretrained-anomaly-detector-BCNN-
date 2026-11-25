@@ -28,6 +28,9 @@ def prepare(manifest, video_root, selection_path, out, identity_policy, audit_no
             or not selection.get("checkpoint_sha256") or not selection.get("ablation_plan_sha256")):
         raise ValueError("Run identity_ablation.py --action select first; supply its LN-b128 matrix selection")
     videos = pd.read_csv(manifest, dtype=str, keep_default_na=False)
+    if any(name in videos for name in ("sample_unit", "clip_id", "segment_start_seconds")):
+        raise ValueError("Segment preprocessing pilots are not a registered head-training protocol. "
+                         "Review duration/coverage results and implement grouped training/calibration first.")
     required = {"split", "dataset", "rel_path", "label", "source_clip", "method"}
     if not required.issubset(videos):
         raise ValueError(f"Manifest missing: {sorted(required - set(videos))}")
