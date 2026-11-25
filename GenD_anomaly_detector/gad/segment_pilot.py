@@ -5,6 +5,12 @@ import math
 
 VERSION = 1
 MICROSECONDS = 1000000
+PLACEMENTS = ("timeline", "interior_v1")
+PILOT_COVERAGE_RULE = {
+    "purpose": "pilot diagnostic flag only; no automatic exclusion or final-test filtering",
+    "minimum_selected_frames": 32, "minimum_detected_fraction": .5,
+    "time_bins": 5, "minimum_good_bins": 4, "minimum_fraction_per_good_bin": .5,
+}
 
 
 def stable_hash(value):
@@ -33,6 +39,51 @@ def bounded_windows(duration, seconds, cap, minimum_seconds=2):
     selected = ([count // 2] if cap == 1 else
                 [i * (count - 1) // (cap - 1) for i in range(cap)] if count > cap else list(range(count)))
     return [(index * window_us, min((index + 1) * window_us, duration_us)) for index in selected]
+
+
+def interior_windows(duration, seconds, cap, minimum_seconds=2):
+    """Centered windows spread inside the video, with margins where duration permits."""
+    if cap < 1 or int(cap) != cap:
+        raise ValueError("Positive integer cap required")
+    cap = int(cap)
+    if not bounded_windows(duration, seconds, cap=1, minimum_seconds=minimum_seconds):
+        return []
+    duration_us, window_us = [int((Decimal(str(value)) * MICROSECONDS).to_integral_value(
+        rounding=ROUND_FLOOR)) for value in (duration, seconds)]
+    length = min(duration_us, window_us)
+    # Reserve margins instead of forcing two windows against both endpoints.
+    count = min(cap, max(1, duration_us // window_us - 1))
+    starts = [(i + 1) * duration_us // (count + 1) - length // 2 for i in range(count)]
+    return [(start, start + length) for start in starts]
+
+
+def temporal_face_coverage(timestamps, has_face, start, end):
+    """Describe where detections occur, so 32 frames in one instant do not look sustained."""
+    if len(timestamps) != len(has_face) or not all(math.isfinite(v) for v in (start, end)) or end <= start:
+        raise ValueError("Invalid timing/face arrays or interval")
+    bins = PILOT_COVERAGE_RULE["time_bins"]
+    decoded, detected, face_times = [0] * bins, [0] * bins, []
+    for timestamp, found in zip(timestamps, has_face):
+        timestamp = float(timestamp)
+        if not math.isfinite(timestamp) or not start <= timestamp < end:
+            raise ValueError("Frame PTS outside its half-open window or unknown")
+        index = min(bins - 1, int((timestamp - start) / (end - start) * bins))
+        decoded[index] += 1
+        if found:
+            detected[index] += 1
+            face_times.append(timestamp)
+    fractions = [n / d if d else 0. for n, d in zip(detected, decoded)]
+    return {"decoded_frames_by_bin": decoded, "detected_frames_by_bin": detected,
+            "detected_fraction_by_bin": fractions,
+            "good_bins": sum(value >= PILOT_COVERAGE_RULE["minimum_fraction_per_good_bin"] for value in fractions),
+            "detected_fraction": len(face_times) / len(timestamps) if len(timestamps) else 0.,
+            "face_span_seconds": max(face_times) - min(face_times) if face_times else 0.}
+
+
+def sustained_candidate(selected_frames, coverage):
+    return (selected_frames >= PILOT_COVERAGE_RULE["minimum_selected_frames"]
+            and coverage["detected_fraction"] >= PILOT_COVERAGE_RULE["minimum_detected_fraction"]
+            and coverage["good_bins"] >= PILOT_COVERAGE_RULE["minimum_good_bins"])
 
 
 def window_spec(row):
@@ -90,7 +141,7 @@ def iter_window_frames(path, start, end, origin):
 
 
 def make_pilot(parents, durations, seconds=10, clips_per_parent=2, groups_per_stratum=2,
-               minimum_seconds=2, seed=42):
+               minimum_seconds=2, seed=42, placement="timeline"):
     """One original per source group per stratum, and capped windows per original.
 
     All original role/group assignments are inherited. Final-test originals
@@ -98,6 +149,8 @@ def make_pilot(parents, durations, seconds=10, clips_per_parent=2, groups_per_st
     """
     if groups_per_stratum < 1 or int(groups_per_stratum) != groups_per_stratum:
         raise ValueError("groups_per_stratum must be a positive integer")
+    if placement not in PLACEMENTS:
+        raise ValueError("Unknown window placement")
     lookup = {(r["dataset"], r["rel_path"]): r for r in durations}
     if len(lookup) != len(durations):
         raise ValueError("Duplicate duration rows")
@@ -119,7 +172,8 @@ def make_pilot(parents, durations, seconds=10, clips_per_parent=2, groups_per_st
             raise ValueError("Unknown stream origin; reprobe with --backend pyav: " + str(key))
         if parent.get("bytes") and int(parent["bytes"]) != int(duration["bytes"]):
             raise ValueError("Duration inventory size disagrees with the parent manifest: " + str(key))
-        windows = bounded_windows(duration["duration_seconds"], seconds, clips_per_parent, minimum_seconds)
+        generator = bounded_windows if placement == "timeline" else interior_windows
+        windows = generator(duration["duration_seconds"], seconds, clips_per_parent, minimum_seconds)
         if not windows:
             excluded.append({"dataset": key[0], "rel_path": key[1], "reason": "shorter_than_minimum_window"})
             continue

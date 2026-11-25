@@ -9,7 +9,7 @@ import time
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from gad.segment_pilot import VERSION, window_spec
+from gad.segment_pilot import VERSION, PILOT_COVERAGE_RULE, window_spec
 from gad.upstream import upstream_commit
 from gad.face_detection import POLICIES, policy_spec
 from audit_video_durations import atomic_text, digest, write_csv
@@ -54,6 +54,9 @@ def summarize(rows, measurements, startup_seconds, invocation_seconds):
             "failed_clips": len(records) - len(completed),
             "selected_frames": sum(int(r.get("selected_frames", 0)) for r in completed),
             "low_selected_frame_clips": sum(0 < int(r.get("selected_frames", 0)) < 32 for r in completed),
+            "sustained_face_candidate_clips": sum(bool(r.get("sustained_face_candidate", False)) for r in completed),
+            "originals_with_sustained_face_candidate": len({r["parent_video_key"] for r in completed
+                                                            if r.get("sustained_face_candidate", False)}),
             "fallback_attempted_frames": sum(int(r.get("fallback_attempted_frames", 0)) for r in completed),
             "fallback_recovered_frames": sum(int(r.get("fallback_recovered_frames", 0)) for r in completed),
             "fallback_rejected_candidates": sum(int(r.get("fallback_rejected_candidates", 0)) for r in completed),
@@ -87,6 +90,7 @@ def run(args):
     contract = {"pilot_plan_sha256": digest(args.pilot_plan), "video_root": str(root),
                 "detector_sha256": digest(args.retinaface), "cpu": args.cpu,
                 "detection_policy": policy_spec(args.detection_policy),
+                "pilot_coverage_rule": PILOT_COVERAGE_RULE,
                 "detection_code_sha256": digest(here.parent / "gad/face_detection.py"),
                 "runtime": {"python": sys.version, "pyav": av.__version__,
                             "opencv": cv2.__version__, "onnxruntime": onnxruntime.__version__},
@@ -135,7 +139,7 @@ def run(args):
             measurement.update({name: record[name] for name in
                                 ("status", "total_frames", "detected_frames", "seconds", "error",
                                  "fallback_attempted_frames", "fallback_recovered_frames", "fallback_rejected_candidates",
-                                 "selected_fallback_frames", "detected_fraction") if name in record})
+                                 "selected_fallback_frames", "detected_fraction", "sustained_face_candidate") if name in record})
             measurement.setdefault("status", status)
             measurement["selected_frames"] = len(record.get("selected", []))
             measurement["selected_timestamps_seconds"] = record.get("selected_timestamps_seconds", [])
@@ -147,6 +151,7 @@ def run(args):
         summary = summarize(rows, measurements, startup, time.perf_counter() - started)
         summary.update(host=socket.gethostname(), detector_providers=providers, runtime=contract["runtime"])
         summary["detection_policy"] = contract["detection_policy"]
+        summary["pilot_coverage_rule"] = PILOT_COVERAGE_RULE
         atomic_text(work / "pilot_summary.json", json.dumps(summary, indent=2))
         filled = int(30 * index / len(rows))
         elapsed = time.perf_counter() - loading - startup

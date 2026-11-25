@@ -13,12 +13,12 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from gad.diagnostic_protocol import audit_diagnostic_table
-from gad.segment_pilot import VERSION, make_pilot, parent_key
+from gad.segment_pilot import VERSION, PLACEMENTS, PILOT_COVERAGE_RULE, make_pilot, parent_key
 from audit_video_durations import atomic_text, digest, write_csv
 
 
 def prepare(manifest, duration_audit, out, seconds=10, clips_per_parent=2,
-            groups_per_stratum=2, minimum_seconds=2, seed=42):
+            groups_per_stratum=2, minimum_seconds=2, seed=42, placement="timeline"):
     manifest, duration_audit, out = Path(manifest), Path(duration_audit), Path(out)
     if out.exists():
         raise FileExistsError("Preserve the old draft and use a new pilot directory")
@@ -46,7 +46,7 @@ def prepare(manifest, duration_audit, out, seconds=10, clips_per_parent=2,
     with (duration_audit / "durations.csv").open(encoding="utf-8", newline="") as stream:
         durations = list(csv.DictReader(stream))
     rows, excluded = make_pilot(parents.to_dict("records"), durations, seconds, clips_per_parent,
-                                groups_per_stratum, minimum_seconds, seed)
+                                groups_per_stratum, minimum_seconds, seed, placement)
     out.mkdir(parents=True)
     write_csv(out / "pilot_videos.csv", rows)
     write_csv(out / "excluded_short_originals.csv", excluded)
@@ -65,6 +65,7 @@ def prepare(manifest, duration_audit, out, seconds=10, clips_per_parent=2,
             "nominal_seconds": seconds, "minimum_seconds": minimum_seconds,
             "max_clips_per_original": clips_per_parent, "max_groups_per_role_dataset_label": groups_per_stratum,
             "originals_per_group_per_stratum": 1, "seed": seed,
+            "window_placement": placement, "pilot_coverage_rule": PILOT_COVERAGE_RULE,
             "sampling": "source-group hash selection, one original per chosen group, timeline-spread nonoverlapping windows",
             "time_interpretation": "seconds from audited stream start, half-open bounds; actual PTS used during decode",
             "test_policy": "test originals reserved; no test pixels decoded or scores produced",
@@ -87,9 +88,10 @@ def main():
     parser.add_argument("--groups-per-stratum", type=int, default=2)
     parser.add_argument("--minimum-seconds", type=float, default=2)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--placement", choices=PLACEMENTS, default="timeline")
     args = parser.parse_args()
     prepare(args.manifest, args.duration_audit, args.out, args.seconds, args.clips_per_original,
-            args.groups_per_stratum, args.minimum_seconds, args.seed)
+            args.groups_per_stratum, args.minimum_seconds, args.seed, args.placement)
 
 
 if __name__ == "__main__":

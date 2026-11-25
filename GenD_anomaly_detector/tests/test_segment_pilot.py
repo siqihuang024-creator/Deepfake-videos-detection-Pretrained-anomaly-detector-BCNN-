@@ -14,7 +14,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "scripts")]
 from gad.video_probe import ffprobe_metadata, finite_number, pyav_metadata
-from gad.segment_pilot import bounded_windows, iter_window_frames, make_pilot, window_spec
+from gad.segment_pilot import (bounded_windows, iter_window_frames, make_pilot, window_spec,
+                               interior_windows, temporal_face_coverage, sustained_candidate)
 from audit_video_durations import audit, atomic_text, digest, inventory_rows, probe_row, write_csv
 from prepare_segment_pilot import prepare as prepare_pilot
 from preprocess_segment_pilot import load_pilot, summarize
@@ -123,6 +124,62 @@ class ProbeTests(unittest.TestCase):
 
 
 class WindowTests(unittest.TestCase):
+    def test_interior_windows_are_centered_nonoverlapping_and_avoid_endpoints_when_possible(self):
+        self.assertEqual(interior_windows(100, 10, 4), [(15000000, 25000000), (35000000, 45000000),
+                                                       (55000000, 65000000), (75000000, 85000000)])
+        self.assertEqual(interior_windows(20, 10, 4), [(5000000, 15000000)])
+        self.assertEqual(interior_windows(15, 10, 4), [(2500000, 12500000)])
+        self.assertEqual(interior_windows(5, 10, 4), [(0, 5000000)])
+        self.assertEqual(interior_windows(1, 10, 4), [])
+        with self.assertRaises(ValueError):
+            interior_windows(100, 10, 0)
+        for duration in (2, 9.999999, 10, 10.01001, 20, 29.999, 50, 1234.56789):
+            windows = interior_windows(duration, 10, 4)
+            self.assertLessEqual(len(windows), 4)
+            self.assertTrue(all(0 <= a < b <= int(duration * 1000000 + .01) for a, b in windows))
+            self.assertTrue(all(a[1] <= b[0] for a, b in zip(windows, windows[1:])))
+
+    def test_changing_placement_preserves_parent_selection_and_roles(self):
+        parents, durations = [], []
+        for role in ("train", "calibration", "dev", "test"):
+            for index in range(6):
+                path = f"HDTF/{role}_{index}.mp4"
+                parents.append(dict(dataset="HDTF", rel_path=path, split=role, label=0, source_clip=f"{role}_{index}"))
+                durations.append(dict(dataset="HDTF", rel_path=path, status="ok", duration_seconds=100,
+                                      stream_start_seconds=0, bytes=1, mtime_ns=1, duration_source="video_stream"))
+        old = make_pilot(parents, durations)[0]
+        new = make_pilot(parents, durations, clips_per_parent=4, placement="interior_v1")[0]
+        self.assertEqual({(r["parent_video_key"], r["split"]) for r in old},
+                         {(r["parent_video_key"], r["split"]) for r in new})
+        self.assertEqual(len(new), 24)
+        self.assertNotIn("test", {r["split"] for r in new})
+        self.assertTrue(all(0 < r["segment_start_seconds"] < r["segment_end_seconds"] < 100 for r in new))
+        self.assertEqual(new, make_pilot(list(reversed(parents)), durations,
+                                        clips_per_parent=4, placement="interior_v1")[0])
+
+    def test_coverage_distinguishes_sustained_faces_from_short_concentrated_detection(self):
+        timestamps = [.05 + index * .1 for index in range(100)]
+        concentrated = temporal_face_coverage(timestamps, [i < 50 for i in range(100)], 0, 10)
+        spread = temporal_face_coverage(timestamps, [i % 2 == 0 for i in range(100)], 0, 10)
+        self.assertEqual(concentrated["detected_fraction"], .5)
+        self.assertEqual(spread["detected_fraction"], .5)
+        self.assertEqual(spread["good_bins"], 5)
+        self.assertFalse(sustained_candidate(32, concentrated))
+        self.assertTrue(sustained_candidate(32, spread))
+        self.assertFalse(sustained_candidate(1, spread))
+        empty = temporal_face_coverage([], [], 0, 10)
+        self.assertFalse(sustained_candidate(0, empty))
+
+    def test_coverage_uses_actual_nonzero_pts_and_rejects_unknown_or_outside_timing(self):
+        result = temporal_face_coverage([5.1, 6.1, 7.1, 8.1, 9.1], [True] * 5, 5, 10)
+        self.assertEqual(result["detected_frames_by_bin"], [1] * 5)
+        self.assertEqual(result["good_bins"], 5)
+        for times in ([float("nan")], [10], [4.9]):
+            with self.assertRaises(ValueError):
+                temporal_face_coverage(times, [True], 5, 10)
+        with self.assertRaises(ValueError):
+            temporal_face_coverage([5.1], [], 5, 10)
+
     def test_capped_timeline_windows_short_tails_and_invalid_lengths(self):
         self.assertEqual(bounded_windows(102, 10, 3), [(0, 10000000), (50000000, 60000000), (100000000, 102000000)])
         self.assertEqual(bounded_windows(21, 10, 20), [(0, 10000000), (10000000, 20000000)])

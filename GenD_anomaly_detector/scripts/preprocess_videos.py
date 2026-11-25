@@ -32,7 +32,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from gad import frames as FR  # noqa: E402
 from gad.upstream import add_gend_to_path, upstream_commit  # noqa: E402
-from gad.segment_pilot import iter_window_frames, window_spec  # noqa: E402
+from gad.segment_pilot import (iter_window_frames, window_spec, temporal_face_coverage,
+                               sustained_candidate)  # noqa: E402
 from gad.face_detection import POLICIES, detect_with_policy, policy_spec  # noqa: E402
 
 DET_THRESH = 0.5
@@ -193,6 +194,14 @@ def process(row, args, model):
             fallback_rejected_candidates=int(det["fallback_rejected"].sum()) if "fallback_rejected" in det else 0,
             selected_fallback_frames=int(det["fallback_used"][selected].sum()) if "fallback_used" in det else 0,
         )
+        if window is not None:
+            coverage = temporal_face_coverage(
+                det["timestamps_seconds"], det["has_face"],
+                window["stream_start_seconds"] + window["segment_start_seconds"],
+                window["stream_start_seconds"] + window["segment_end_seconds"],
+            )
+            record.update(temporal_face_coverage=coverage,
+                          sustained_face_candidate=sustained_candidate(len(selected), coverage))
     if window is not None:
         stat = Path(video_path).stat()
         if (stat.st_size, stat.st_mtime_ns) != (window["source_bytes"], window["source_mtime_ns"]):
