@@ -11,6 +11,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from gad.segment_pilot import VERSION, window_spec
 from gad.upstream import upstream_commit
+from gad.face_detection import POLICIES, policy_spec
 from audit_video_durations import atomic_text, digest, write_csv
 from preprocess_videos import build_detector, process
 
@@ -52,6 +53,11 @@ def summarize(rows, measurements, startup_seconds, invocation_seconds):
             "no_face_clips": sum(r["status"] == "no_face" for r in records),
             "failed_clips": len(records) - len(completed),
             "selected_frames": sum(int(r.get("selected_frames", 0)) for r in completed),
+            "low_selected_frame_clips": sum(0 < int(r.get("selected_frames", 0)) < 32 for r in completed),
+            "fallback_attempted_frames": sum(int(r.get("fallback_attempted_frames", 0)) for r in completed),
+            "fallback_recovered_frames": sum(int(r.get("fallback_recovered_frames", 0)) for r in completed),
+            "fallback_rejected_candidates": sum(int(r.get("fallback_rejected_candidates", 0)) for r in completed),
+            "selected_fallback_frames": sum(int(r.get("selected_fallback_frames", 0)) for r in completed),
             "fresh_clips": len(fresh),
             "fresh_processing_seconds": sum(float(r.get("seconds", 0)) for r in fresh),
             "fresh_video_seconds": sum(float(r["window_seconds"]) for r in fresh),
@@ -80,6 +86,8 @@ def run(args):
     here = Path(__file__).resolve().parent
     contract = {"pilot_plan_sha256": digest(args.pilot_plan), "video_root": str(root),
                 "detector_sha256": digest(args.retinaface), "cpu": args.cpu,
+                "detection_policy": policy_spec(args.detection_policy),
+                "detection_code_sha256": digest(here.parent / "gad/face_detection.py"),
                 "runtime": {"python": sys.version, "pyav": av.__version__,
                             "opencv": cv2.__version__, "onnxruntime": onnxruntime.__version__},
                 "gend_commit": upstream_commit(),
@@ -125,7 +133,9 @@ def run(args):
             record_path = Path(args.records) / (row.video_key + ".json")
             record = json.loads(record_path.read_text(encoding="utf-8")) if record_path.is_file() else {}
             measurement.update({name: record[name] for name in
-                                ("status", "total_frames", "detected_frames", "seconds", "error") if name in record})
+                                ("status", "total_frames", "detected_frames", "seconds", "error",
+                                 "fallback_attempted_frames", "fallback_recovered_frames", "fallback_rejected_candidates",
+                                 "selected_fallback_frames", "detected_fraction") if name in record})
             measurement.setdefault("status", status)
             measurement["selected_frames"] = len(record.get("selected", []))
             measurement["selected_timestamps_seconds"] = record.get("selected_timestamps_seconds", [])
@@ -136,6 +146,7 @@ def run(args):
         write_csv(work / "pilot_measurements.csv", measurements)
         summary = summarize(rows, measurements, startup, time.perf_counter() - started)
         summary.update(host=socket.gethostname(), detector_providers=providers, runtime=contract["runtime"])
+        summary["detection_policy"] = contract["detection_policy"]
         atomic_text(work / "pilot_summary.json", json.dumps(summary, indent=2))
         filled = int(30 * index / len(rows))
         elapsed = time.perf_counter() - loading - startup
@@ -154,6 +165,7 @@ def main():
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--retinaface", type=Path, required=True)
     parser.add_argument("--cpu", action="store_true")
+    parser.add_argument("--detection-policy", choices=POLICIES, default="none")
     parser.add_argument("--resume", action="store_true")
     run(parser.parse_args())
 

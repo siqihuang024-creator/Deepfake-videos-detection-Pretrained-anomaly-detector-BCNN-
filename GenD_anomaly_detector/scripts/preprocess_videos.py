@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from gad import frames as FR  # noqa: E402
 from gad.upstream import add_gend_to_path, upstream_commit  # noqa: E402
 from gad.segment_pilot import iter_window_frames, window_spec  # noqa: E402
+from gad.face_detection import POLICIES, detect_with_policy, policy_spec  # noqa: E402
 
 DET_THRESH = 0.5
 NMS_THRESH = 0.4
@@ -69,11 +70,15 @@ def iter_frames(path: str):
         yield index, image
 
 
-def detect_all(model, video_path: str, window=None):
+def detect_all(model, video_path: str, window=None, detection_policy="none"):
+    policy_spec(detection_policy)
     boxes, scores, landmarks, has_face, timestamps = [], [], [], [], []
+    fallback = {name: [] for name in ("fallback_attempted", "fallback_used", "fallback_rejected")}
     for _, frame, timestamp in iter_timed_frames(video_path, window):
         timestamps.append(timestamp)
-        det, kps = model.detect(frame)
+        det, kps, audit = detect_with_policy(model, frame, detection_policy)
+        for name in fallback:
+            fallback[name].append(audit[name])
         if len(det) == 0:
             has_face.append(False)
             boxes.append(np.full(4, np.nan, np.float32))
@@ -88,13 +93,17 @@ def detect_all(model, video_path: str, window=None):
         landmarks.append(kps[best].astype(np.float32))
     if window is not None and not has_face:
         raise ValueError("No decoded frames in the audited window; check duration/PTS alignment")
-    return {
+    result = {
         "has_face": np.asarray(has_face, bool),
         "boxes": np.asarray(boxes, np.float32).reshape(-1, 4),
         "scores": np.asarray(scores, np.float32),
         "landmarks": np.asarray(landmarks, np.float32).reshape(-1, 5, 2),
         "timestamps_seconds": np.asarray(timestamps, np.float64),
     }
+    if detection_policy != "none":
+        result.update({name: np.asarray(values, np.int32 if name == "fallback_rejected" else bool)
+                       for name, values in fallback.items()})
+    return result
 
 
 def write_crops(video_path: str, selected, landmarks, out_dir: Path, window=None, expected_timestamps=None):
@@ -128,6 +137,8 @@ def write_crops(video_path: str, selected, landmarks, out_dir: Path, window=None
 def process(row, args, model):
     import av
 
+    detection_policy = getattr(args, "detection_policy", "none")
+    policy = policy_spec(detection_policy)
     window = window_spec(row) if getattr(row, "sample_unit", "") == "segment_pilot" else None
     if window is not None:
         window["pilot_contract_sha256"] = args.pilot_contract_sha256
@@ -139,6 +150,8 @@ def process(row, args, model):
             raise ValueError("Video changed since duration audit; create a new audit and pilot")
     if record_path.exists():
         existing = json.loads(record_path.read_text(encoding="utf-8"))
+        if existing.get("detection_policy", "none") != detection_policy:
+            raise ValueError("Detection policy changed; use a new preprocessing directory")
         if window is not None and any(existing.get(k) != value for k, value in window.items()):
             raise ValueError("Pilot preprocessing record belongs to a different window or run contract")
         if existing["status"] != "decode_error":
@@ -148,10 +161,11 @@ def process(row, args, model):
               "frame_subset": row.frame_subset, "det_thresh": DET_THRESH, "nms_thresh": NMS_THRESH,
               "scale": SCALE, "target_size": list(TARGET_SIZE), "num_frames_target": FR.NUM_FRAMES,
               "train_frame_seed": FR.TRAIN_FRAME_SEED, "gend_commit": upstream_commit()}
+    record.update(detection_policy=detection_policy, detection_policy_details=policy)
     if window is not None:
         record.update(window)
     try:
-        det = detect_all(model, video_path, window)
+        det = detect_all(model, video_path, window, detection_policy)
     except av.error.FFmpegError as error:  # unreadable video: record it, never silently drop
         record.update(status="decode_error", error=repr(error), total_frames=0, detected_frames=0, selected=[])
     except Exception as error:  # detector/runtime failure: no record, so a rerun retries this video
@@ -171,6 +185,14 @@ def process(row, args, model):
                       detected_frames=len(detected), selected=selected,
                       selected_timestamps_seconds=[float(det["timestamps_seconds"][i])
                           if np.isfinite(det["timestamps_seconds"][i]) else None for i in selected])
+        record.update(
+            detected_fraction=len(detected) / len(det["has_face"]) if len(det["has_face"]) else 0.,
+            selected_frame_count=len(selected),
+            fallback_attempted_frames=int(det["fallback_attempted"].sum()) if "fallback_attempted" in det else 0,
+            fallback_recovered_frames=int(det["fallback_used"].sum()) if "fallback_used" in det else 0,
+            fallback_rejected_candidates=int(det["fallback_rejected"].sum()) if "fallback_rejected" in det else 0,
+            selected_fallback_frames=int(det["fallback_used"][selected].sum()) if "fallback_used" in det else 0,
+        )
     if window is not None:
         stat = Path(video_path).stat()
         if (stat.st_size, stat.st_mtime_ns) != (window["source_bytes"], window["source_mtime_ns"]):
@@ -196,6 +218,8 @@ def main():
     parser.add_argument("--work", required=True, help="Writes crops/, records/, detections/ here")
     parser.add_argument("--retinaface", required=True, help="Path to det_10g.onnx")
     parser.add_argument("--cpu", action="store_true")
+    parser.add_argument("--detection-policy", choices=POLICIES, default="none",
+                        help="Opt-in pad_on_empty_v1 fallback; use a new work directory")
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=int(os.environ.get("SLURM_ARRAY_TASK_ID", 0)))
     args = parser.parse_args()

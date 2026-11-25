@@ -24,4 +24,5 @@ echo 'Node-wide GPU snapshot; entries may include other allocations:'
 nvidia-smi --query-gpu=index,uuid,power.limit,utilization.gpu,memory.used --format=csv
 "$py" -u GenD_anomaly_detector/scripts/preprocess_segment_pilot.py \
     --pilot-plan "$plan" --video-root /data/datasets/shuang --work "$work" \
-    --retinaface work/weights/det_10g.onnx "${extra[@]}"
+    --retinaface work/weights/det_10g.onnx \
+    --detection-policy "${GEND_DETECTION_POLICY:-none}" "${extra[@]}"
