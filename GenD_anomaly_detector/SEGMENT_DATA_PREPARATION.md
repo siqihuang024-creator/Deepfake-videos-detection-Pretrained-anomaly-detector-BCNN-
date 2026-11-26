@@ -69,3 +69,5 @@ GPU 任务申请 1 GPU、4 CPU、16 GiB 内存，时间上限 8 小时。这是�
 - 输出：共同 `training_registration.json`、`training_units.csv`；两套 `head.npz`、训练历史/实时进度、校准/开发分数、误报清单、分来源误报率及区间、坍缩诊断、`development_lock.json`；总表 `comparison.csv` 和完成标记 `completion.json`。开发锁是后续评价的快照，不是最终测试成绩。若坍缩标记出现，不能将该头当作成功的鉴别器。
 
 提交格式：`sbatch GenD_anomaly_detector/slurm/segment_bayesian.sbatch DATA CACHE_RUN SELECTION NEW_OUT`。申请 4 CPU、16 GiB，以 `--time=0` 请求无限运行时间（以集群策略允许为准），不申请 GPU。第三/四步使用完全相同的单元和训练规则，区别为冻结编码器及其缓存。保留第二步结果；不同数据集上的数字不能直接解释为相对第二步的提升。
+
+作业 313 的开发结果已完成本地核查，当前贝叶斯头 AUROC 接近随机。后续先按 `SVDD_CONTROLS.md` 复用相同缓存和锁定单元，运行中心距离及两种确定性 SVDD 对照；不重做第三/四步贝叶斯训练，也不打开最终测试。
