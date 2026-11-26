@@ -1,4 +1,4 @@
-"""Time a registered segment preprocessing pilot, without training or test inference."""
+"""Preprocess registered segment candidates, without head training or final-test inference."""
 import argparse
 import json
 from pathlib import Path
@@ -15,14 +15,23 @@ from gad.face_detection import POLICIES, policy_spec
 from audit_video_durations import atomic_text, digest, write_csv
 from preprocess_videos import build_detector, process
 
+DATA_PREPARATION_PURPOSE = "registered bounded candidate preprocessing; no training or final testing"
+
 
 def load_pilot(plan_path):
     plan_path = Path(plan_path)
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
-    if plan.get("version") != VERSION or plan.get("purpose") != "preprocessing timing and face-coverage pilot only":
+    if plan.get("version") != VERSION or plan.get("purpose") not in (
+            "preprocessing timing and face-coverage pilot only", DATA_PREPARATION_PURPOSE):
         raise ValueError("Not a supported segment pilot")
-    table = plan_path.parent / "pilot_videos.csv"
-    if digest(table) != plan["pilot_table_sha256"]:
+    if plan["purpose"] == DATA_PREPARATION_PURPOSE:
+        if plan.get("table") != "candidate_videos.csv" or not plan.get("registered_files"):
+            raise ValueError("Missing bounded data-preparation registration")
+        for name in ("parents.csv", "selected_originals.csv", "reserved_test.csv", "unused_development.csv", "candidate_videos.csv"):
+            if plan["registered_files"].get(name) != digest(plan_path.parent / name):
+                raise ValueError("Registered data-preparation file changed: " + name)
+    table = plan_path.parent / plan.get("table", "pilot_videos.csv")
+    if digest(table) != plan.get("table_sha256", plan.get("pilot_table_sha256")):
         raise ValueError("Pilot table changed after registration")
     rows = pd.read_csv(table, dtype=str, keep_default_na=False)
     if rows.empty or rows["video_key"].duplicated().any() or rows["clip_id"].duplicated().any():
@@ -83,6 +92,8 @@ def run(args):
 
     started = time.perf_counter()
     plan, rows = load_pilot(args.pilot_plan)
+    if plan.get("detection_policy") is not None and plan["detection_policy"] != policy_spec(args.detection_policy):
+        raise ValueError("Requested detection policy differs from registered data-preparation policy")
     root, work = Path(args.video_root).resolve(), Path(args.work)
     if not root.is_dir():
         raise ValueError("Video root is not mounted")
@@ -152,6 +163,13 @@ def run(args):
         summary.update(host=socket.gethostname(), detector_providers=providers, runtime=contract["runtime"])
         summary["detection_policy"] = contract["detection_policy"]
         summary["pilot_coverage_rule"] = PILOT_COVERAGE_RULE
+        summary["data_preparation_purpose"] = plan["purpose"]
+        if plan["purpose"] == DATA_PREPARATION_PURPOSE:
+            summary["purpose"] = "registered candidate preprocessing coverage, not detection accuracy"
+            summary["limitation"] = (
+                "Source-bounded candidates with a paired development subset; correlated clips are not independent people. "
+                "All failed/low-coverage records are retained. No head fitting, calibration or final testing. "
+                "Timing includes decoding, detection, crop writing and I/O; reused clips excluded.")
         atomic_text(work / "pilot_summary.json", json.dumps(summary, indent=2))
         filled = int(30 * index / len(rows))
         elapsed = time.perf_counter() - loading - startup

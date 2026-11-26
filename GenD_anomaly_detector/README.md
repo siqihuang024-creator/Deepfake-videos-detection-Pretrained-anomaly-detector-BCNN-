@@ -6,6 +6,7 @@
 官方仓库同时支持 CLIP、PE、DINOv3 三种 backbone，CLIP 和 DINOv3 不在主线中使用。
 当前第二步完成后的流程见 **[DIAGNOSTIC_PHASE.md](DIAGNOSTIC_PHASE.md)**：先完成两个冻结 GenD 编码器上的贝叶斯神经网络头实验；NIW / Ledoit–Wolf 作为后续或平行对照，共用逐帧缓存。第二步不重训，暂缓 DeepSpeak / CoCoVideo；下文早期外部全量评估命令仅作历史记录。
 全量预处理前的实际时长核查与少量片段计时见 **[SEGMENT_PILOT.md](SEGMENT_PILOT.md)**；先验证窗口、有效人脸与耗时，再确定正式片段训练协议。
+作业 288 核查后的有界候选准备见 **[SEGMENT_DATA_PREPARATION.md](SEGMENT_DATA_PREPARATION.md)**：按来源限额准备 A，并先处理 200 个 DFDC 开发视频，最终测试集继续保留。
 前一阶段 3D-CNN 实验见 `E:\PhD\Deepfake Video 3D-CNN+BCNN v2(1)`，背景摘要见上级目录 `PREVIOUS_PROJECT_CONTEXT.md`。
 
 ## 目录约定
