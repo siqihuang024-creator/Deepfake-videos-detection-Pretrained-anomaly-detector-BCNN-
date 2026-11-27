@@ -71,3 +71,5 @@ GPU 任务申请 1 GPU、4 CPU、16 GiB 内存，时间上限 8 小时。这是�
 提交格式：`sbatch GenD_anomaly_detector/slurm/segment_bayesian.sbatch DATA CACHE_RUN SELECTION NEW_OUT`。申请 4 CPU、16 GiB，以 `--time=0` 请求无限运行时间（以集群策略允许为准），不申请 GPU。第三/四步使用完全相同的单元和训练规则，区别为冻结编码器及其缓存。保留第二步结果；不同数据集上的数字不能直接解释为相对第二步的提升。
 
 作业 313 的开发结果已完成本地核查，当前贝叶斯头 AUROC 接近随机。后续先按 `SVDD_CONTROLS.md` 复用相同缓存和锁定单元，运行中心距离及两种确定性 SVDD 对照；不重做第三/四步贝叶斯训练，也不打开最终测试。
+
+2026-11-27：316/317 对照和KL诊断已完成。下一阶段为 `GEOMETRY_DIAGNOSTICS.md` 的CPU几何/来源诊断：来源均值上的收缩Mahalanobis、真实来源差异、由冻结分类器权重确定的方向移除；同一缓存和单元，NIW暂缓。研究定位为已有深伪监督表征上的真实样本下游建模与校准，不是全流程未使用伪造监督。
