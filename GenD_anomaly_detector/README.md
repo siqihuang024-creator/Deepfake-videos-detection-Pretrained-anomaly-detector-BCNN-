@@ -9,6 +9,7 @@
 作业 288 核查后的有界候选准备见 **[SEGMENT_DATA_PREPARATION.md](SEGMENT_DATA_PREPARATION.md)**：按来源限额准备 A，并先处理 200 个 DFDC 开发视频，最终测试集继续保留。
 342 后续的固定片段协方差对照与最多6个校准片段的图片复核见 **[COVARIANCE_CONTROLS.md](COVARIANCE_CONTROLS.md)**：仅CPU，保留旧结果与最终测试集。
 固定图片抽查后的下一项是 **[SOURCE_SENSITIVITY.md](SOURCE_SENSITIVITY.md)**：先复用缓存检查HDTF-only拟合与校准的四格敏感性，再决定数据准备v2的范围；不是按个别分数清洗，也不据此推断神经贝叶斯头的稳健性。
+347之后的固定来源匹配与HDTF-only神经头检查见 **[HDTF_FOLLOWUP.md](HDTF_FOLLOWUP.md)**：一次CPU作业完成TalkingHead-only、10个混合来源子集、方向机制，以及两种KL换算下的贝叶斯头和确定性SVDD对照。
 前一阶段 3D-CNN 实验见 `E:\PhD\Deepfake Video 3D-CNN+BCNN v2(1)`，背景摘要见上级目录 `PREVIOUS_PROJECT_CONTEXT.md`。
 
 ## 目录约定
